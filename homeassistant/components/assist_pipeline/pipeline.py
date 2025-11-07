@@ -993,7 +993,7 @@ class PipelineRun:
 
         if not result.text:
             raise SpeechToTextError(
-                code="stt-no-text-recognized", message="No text recognized"
+                code="stt-no-text-recognized", message=""
             )
 
         self.process_event(
