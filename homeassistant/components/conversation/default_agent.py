@@ -86,7 +86,7 @@ from .trigger import TriggerDetails
 _LOGGER = logging.getLogger(__name__)
 
 
-_DEFAULT_ERROR_TEXT = "Sorry, I couldn't understand that"
+_DEFAULT_ERROR_TEXT = ""  # Убрал отсюда "Sorry, I couldn't understand that"
 _ENTITY_REGISTRY_UPDATE_FIELDS = ["aliases", "name", "original_name"]
 
 _DEFAULT_EXPOSED_ATTRIBUTES = {"device_class"}

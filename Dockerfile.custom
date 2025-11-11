@@ -1,0 +1,50 @@
+FROM mcr.microsoft.com/vscode/devcontainers/base:debian
+
+SHELL ["/bin/bash", "-o", "pipefail", "-c"]
+
+RUN \
+    apt-get update \
+    && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+        ffmpeg \
+        libturbojpeg0 \
+        libpcap-dev \
+        libyaml-dev \
+        git \
+        sed \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/*
+
+# Добавляем go2rtc
+COPY --from=ghcr.io/alexxit/go2rtc:latest /usr/local/bin/go2rtc /bin/go2rtc
+
+WORKDIR /usr/src
+
+# Копируем uv
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
+
+# Создаем виртуальное окружение
+RUN uv venv /opt/venv
+ENV PATH="/opt/venv/bin:$PATH" VIRTUAL_ENV="/opt/venv"
+
+# Копируем зависимости
+COPY requirements.txt ./
+COPY homeassistant/package_constraints.txt homeassistant/package_constraints.txt
+
+# Устанавливаем зависимости
+RUN uv pip install --index-strategy unsafe-best-match -r requirements.txt
+
+# Копируем весь код Home Assistant
+COPY . homeassistant/
+
+# Устанавливаем Home Assistant в режиме разработки
+RUN uv pip install -e ./homeassistant
+
+# Копируем и выполняем скрипт для обновления intents
+#COPY update_intents.sh /
+#RUN chmod +x /update_intents.sh
+#RUN /update_intents.sh
+
+WORKDIR /config
+
+# Точка входа
+CMD ["python", "-m", "homeassistant", "--config", "/config"]

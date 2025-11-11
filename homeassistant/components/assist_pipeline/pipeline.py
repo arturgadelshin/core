@@ -1308,6 +1308,10 @@ class PipelineRun:
                     speech = conversation_result.response.speech.get("plain", {}).get(
                         "speech", ""
                     )
+                    
+                    if speech == "Обращение не распознано":
+                        speech = ""
+
                     if tts_input_stream and self._streamed_response_text:
                         tts_input_stream.put_nowait(None)
 
@@ -1326,10 +1330,10 @@ class PipelineRun:
 
         except Exception as src_error:
             _LOGGER.exception("Unexpected error during intent recognition")
-            raise IntentRecognitionError(
-                code="intent-failed",
-                message="Unexpected error during intent recognition",
-            ) from src_error
+            # Вместо выброса IntentRecognitionError - возвращаем пустую строку и флаг
+            speech = ""  # или "Извините, произошла ошибка" на ваш выбор
+            all_targets_in_satellite_area = False
+            return (speech, all_targets_in_satellite_area)
 
         _LOGGER.debug("conversation result %s", conversation_result)
 
