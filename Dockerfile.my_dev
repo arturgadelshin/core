@@ -1,0 +1,80 @@
+# Dockerfile.dev — для локального запуска модифицированного Home Assistant
+FROM mcr.microsoft.com/vscode/devcontainers/base:debian
+
+SHELL ["/bin/bash", "-o", "pipefail", "-c"]
+
+# Установка системных зависимостей, включая библиотеки для av==13.1.0
+RUN \
+    apt-get update \
+    && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+        bluez \
+        ffmpeg \
+        libudev-dev \
+        libavformat-dev \
+        libavcodec-dev \
+        libavdevice-dev \
+        libavutil-dev \
+        libswscale-dev \
+        libswresample-dev \
+        libavfilter-dev \
+        libpcap-dev \
+        libturbojpeg0 \
+        libyaml-dev \
+        libxml2 \
+        git \
+        cmake \
+        autoconf \
+        build-essential \
+        pkg-config \
+        python3-dev \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/*
+
+
+
+# Добавляем go2rtc (опционально, если используется)
+COPY --from=ghcr.io/alexxit/go2rtc:latest /usr/local/bin/go2rtc /usr/local/bin/go2rtc
+
+# Копируем uv (современный Python-инструмент)
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
+
+
+
+# Создаём пользователя для запуска (но позже переключимся на root для /config)
+USER vscode
+
+# Устанавливаем Python и venv
+WORKDIR /home/vscode
+COPY .python-version ./
+RUN uv python install
+
+ENV VIRTUAL_ENV="/home/vscode/.local/ha-venv"
+RUN uv venv $VIRTUAL_ENV
+ENV PATH="$VIRTUAL_ENV/bin:$PATH"
+
+RUN uv pip install --no-cache-dir numpy av pillow
+
+# Клонируем и устанавливаем hass-release (опционально, для dev-сборок)
+RUN git clone --depth 1 https://github.com/home-assistant/hass-release ~/hass-release \
+    && uv pip install -e ~/hass-release/
+
+# Копируем зависимости и устанавливаем их
+COPY requirements.txt ./
+COPY homeassistant/package_constraints.txt homeassistant/package_constraints.txt
+RUN uv pip install -r requirements.txt
+
+
+USER root
+# Копируем **весь ваш код** внутрь контейнера
+COPY . /workspaces/core
+WORKDIR /workspaces/core
+
+# Устанавливаем Home Assistant в режиме разработки
+RUN uv pip install -e .
+
+# Переключаемся на root, чтобы иметь доступ к /config
+USER root
+WORKDIR /config
+
+# Запуск Home Assistant
+CMD ["python", "-m", "homeassistant", "--config", "/config"]
