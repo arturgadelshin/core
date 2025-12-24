@@ -58,6 +58,7 @@ RUN uv pip install --no-cache-dir numpy av pillow
 RUN git clone --depth 1 https://github.com/home-assistant/hass-release ~/hass-release \
     && uv pip install -e ~/hass-release/
 
+RUN uv pip install --no-cache-dir 'pycares>=4.0.0,<5.0.0' 'aiodns'>=3.0.0,<4.0.0'
 # Копируем зависимости и устанавливаем их
 COPY requirements.txt ./
 COPY homeassistant/package_constraints.txt homeassistant/package_constraints.txt
