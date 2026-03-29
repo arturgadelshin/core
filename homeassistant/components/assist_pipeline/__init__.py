@@ -17,6 +17,7 @@ from .const import (
     DATA_CONFIG,
     DATA_LAST_WAKE_UP,
     DOMAIN,
+    EVENT_DEBUG_RECORDING,
     EVENT_RECORDING,
     OPTION_PREFERRED,
     SAMPLE_CHANNELS,
@@ -47,6 +48,7 @@ from .websocket_api import async_register_websocket_api
 
 __all__ = (
     "DOMAIN",
+    "EVENT_DEBUG_RECORDING",
     "EVENT_RECORDING",
     "OPTION_PREFERRED",
     "SAMPLES_PER_CHUNK",

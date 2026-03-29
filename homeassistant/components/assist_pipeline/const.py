@@ -17,6 +17,8 @@ WAKE_WORD_COOLDOWN = 2  # seconds
 
 EVENT_RECORDING = f"{DOMAIN}_recording"
 
+EVENT_DEBUG_RECORDING = f"{DOMAIN}_debug_recording"
+
 SAMPLE_RATE = 16000  # hertz
 SAMPLE_WIDTH = 2  # bytes
 SAMPLE_CHANNELS = 1  # mono

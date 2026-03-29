@@ -63,6 +63,7 @@ from .const import (
     DATA_CONFIG,
     DATA_LAST_WAKE_UP,
     DOMAIN,
+    EVENT_DEBUG_RECORDING,
     MS_PER_CHUNK,
     SAMPLE_CHANNELS,
     SAMPLE_RATE,
@@ -589,6 +590,9 @@ class PipelineRun:
     debug_recording_queue: Queue[str | bytes | None] | None = None
     """Queue to communicate with debug recording thread"""
 
+    debug_recording_dir: Path | None = field(init=False, default=None)
+    """Path to directory with debug wav files"""
+
     audio_enhancer: AudioEnhancer | None = None
     """VAD/noise suppression/auto gain"""
 
@@ -695,6 +699,38 @@ class PipelineRun:
         # Stop the recording thread before emitting run-end.
         # This ensures that files are properly closed if the event handler reads them.
         await self._stop_debug_recording_thread()
+
+        # Fire event with debug recording info
+        if self.debug_recording_dir is not None:
+            try:
+                relative_path = str(
+                    self.debug_recording_dir.relative_to(
+                        self.hass.config.config_dir
+                    )
+                )
+            except ValueError:
+                relative_path = str(self.debug_recording_dir)
+
+            wav_files: list[str] = []
+            if self.debug_recording_dir.exists():
+                wav_files = sorted(
+                    f.name
+                    for f in self.debug_recording_dir.iterdir()
+                    if f.suffix == ".wav"
+                )
+
+            self.hass.bus.async_fire(
+                EVENT_DEBUG_RECORDING,
+                {
+                    "pipeline_id": self.pipeline.id,
+                    "pipeline_name": self.pipeline.name,
+                    "device_id": self._device_id,
+                    "satellite_id": self._satellite_id,
+                    "run_id": self.id,
+                    "recording_dir": relative_path,
+                    "wav_files": wav_files,
+                },
+            )
 
         self.process_event(
             PipelineEvent(
@@ -1532,6 +1568,7 @@ class PipelineRun:
                     / str(time.monotonic_ns())
                 )
 
+            self.debug_recording_dir = run_recording_dir
             self.debug_recording_queue = Queue()
             self.debug_recording_thread = Thread(
                 target=_pipeline_debug_recording_thread_proc,
