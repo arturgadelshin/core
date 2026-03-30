@@ -122,6 +122,8 @@ class AssistSatelliteAnswer:
     slots: dict[str, Any] = field(default_factory=dict)
     """Matched slots from answer."""
 
+    audio_url: str | None = None  # НОВОЕ ПОЛЕ
+    """URL to audio recording of the response."""
 
 class AssistSatelliteEntity(entity.Entity):
     """Entity encapsulating the state and functionality of an Assist satellite."""
@@ -141,7 +143,7 @@ class AssistSatelliteEntity(entity.Entity):
     _attr_tts_options: dict[str, Any] | None = None
     _pipeline_task: asyncio.Task | None = None
     _ask_question_future: asyncio.Future[str | None] | None = None
-
+    _last_stt_audio_path: str | None = None   # <-- НОВОЕ ПОЛЕ
     __assist_satellite_state = AssistSatelliteState.IDLE
 
     @final
@@ -366,20 +368,31 @@ class AssistSatelliteEntity(entity.Entity):
         self._is_announcing = True
         self._set_state(AssistSatelliteState.RESPONDING)
         self._ask_question_future = asyncio.Future()
+        self._last_stt_audio_path = None
 
         try:
-            # Wait for announcement to finish
             await self.async_start_conversation(announcement)
 
-            # Wait for response text
             response_text = await self._ask_question_future
             if response_text is None:
                 raise HomeAssistantError("No answer from question")
 
-            if not answers:
-                return AssistSatelliteAnswer(id=None, sentence=response_text)
+            audio_url = self._last_stt_audio_path
 
-            return self._question_response_to_answer(response_text, answers)
+            if not answers:
+                return AssistSatelliteAnswer(
+                    id=None,
+                    sentence=response_text,
+                    audio_url=audio_url,
+                )
+
+            answer = self._question_response_to_answer(response_text, answers)
+            return AssistSatelliteAnswer(
+                id=answer.id,
+                sentence=answer.sentence,
+                slots=answer.slots,
+                audio_url=audio_url,
+            )
         finally:
             self._is_announcing = False
             self._set_state(AssistSatelliteState.IDLE)
@@ -565,6 +578,9 @@ class AssistSatelliteEntity(entity.Entity):
         elif event.type is PipelineEventType.STT_START:
             self._set_state(AssistSatelliteState.LISTENING)
         elif event.type is PipelineEventType.STT_END:
+            _LOGGER.debug("STT_END event: %s", event.data) 
+            if event.data and "stt_output" in event.data:
+                self._last_stt_audio_path = event.data["stt_output"].get("audio_path")
             # Intercepting text for ask question
             if (
                 (self._ask_question_future is not None)

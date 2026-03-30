@@ -713,10 +713,12 @@ class PipelineRun:
 
             wav_files: list[str] = []
             if self.debug_recording_dir.exists():
-                wav_files = sorted(
-                    f.name
-                    for f in self.debug_recording_dir.iterdir()
-                    if f.suffix == ".wav"
+                wav_files = await self.hass.async_add_executor_job(
+                    lambda: sorted(
+                        f.name
+                        for f in self.debug_recording_dir.iterdir()
+                        if f.suffix == ".wav"
+                    )
                 )
 
             self.hass.bus.async_fire(
@@ -1038,6 +1040,7 @@ class PipelineRun:
                 {
                     "stt_output": {
                         "text": result.text,
+                        "audio_path": str(self.debug_recording_dir / f"01_stt-{engine}.wav") if self.debug_recording_dir else None,
                     }
                 },
             )
