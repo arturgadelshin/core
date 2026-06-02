@@ -19,3 +19,8 @@ venv
 
 # Temporary files
 **/__pycache__
+
+# Docker volumes / model cache
+model-cache
+piper-data
+wyoming-onnxasr

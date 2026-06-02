@@ -29,7 +29,7 @@ class VadSensitivity(StrEnum):
         if sensitivity == VadSensitivity.AGGRESSIVE:
             return 0.25
 
-        return 0.7
+        return 0.25
 
 
 class AudioBuffer:

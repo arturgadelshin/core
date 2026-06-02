@@ -1,0 +1,49 @@
+version: "3.8"
+services:
+  homeassistant:
+    container_name: ha-test
+    build:
+      context: .
+      dockerfile: Dockerfile.my_dev
+    ports:
+      - "8123:8123"
+    environment:
+      - PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple
+      - UV_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple
+      - TZ=Europe/Moscow
+    volumes:
+      - .:/workspaces/core
+      - ./config:/config
+    restart: unless-stopped
+
+  whisper:
+    container_name: wyoming-onnxasr
+    build:
+      context: ./wyoming-onnxasr
+      dockerfile: Dockerfile
+    ports:
+      - "10301:10301"
+    command: >
+      --model gigaam-v3-rnnt --uri tcp://0.0.0.0:10301 --device cpu --quantization int8 --quantization int8
+    environment:
+      - TZ=Europe/Moscow
+    volumes:
+      - ./model-cache:/root/.cache
+    restart: unless-stopped
+
+  piper:
+    container_name: piper
+    image: rhasspy/wyoming-piper:latest
+    ports:
+      - "10201:10201"
+    volumes:
+      - ./piper-data:/data
+    command: >
+      --uri tcp://0.0.0.0:10201
+      --voice ru_RU-ruslan-medium
+      --noise-scale 0.267
+      --length-scale 1.5
+      --noise-w-scale 0.133
+    environment:
+      - TZ=Europe/Moscow
+    restart: unless-stopped
