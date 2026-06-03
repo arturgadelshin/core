@@ -100,6 +100,54 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
         [AssistSatelliteEntityFeature.START_CONVERSATION],
     )
 
+    component.async_register_entity_service(
+        "set_speech_threshold",
+        cv.make_entity_service_schema(
+            {vol.Required("value"): vol.All(vol.Coerce(float), vol.Range(min=0.1, max=1.0))}
+        ),
+        "async_set_speech_threshold",
+    )
+
+    component.async_register_entity_service(
+        "set_vad_timeout",
+        cv.make_entity_service_schema(
+            {vol.Required("value"): vol.All(vol.Coerce(float), vol.Range(min=1.0, max=60.0))}
+        ),
+        "async_set_vad_timeout",
+    )
+
+    component.async_register_entity_service(
+        "set_silence_seconds",
+        cv.make_entity_service_schema(
+            {vol.Required("value"): vol.All(vol.Coerce(float), vol.Range(min=0.3, max=10.0))}
+        ),
+        "async_set_silence_seconds",
+    )
+
+    component.async_register_entity_service(
+        "set_command_seconds",
+        cv.make_entity_service_schema(
+            {vol.Required("value"): vol.All(vol.Coerce(float), vol.Range(min=0.3, max=10.0))}
+        ),
+        "async_set_command_seconds",
+    )
+
+    component.async_register_entity_service(
+        "set_before_command_speech_threshold",
+        cv.make_entity_service_schema(
+            {vol.Required("value"): vol.All(vol.Coerce(float), vol.Range(min=0.05, max=0.9))}
+        ),
+        "async_set_before_command_speech_threshold",
+    )
+
+    component.async_register_entity_service(
+        "set_vad_mode",
+        cv.make_entity_service_schema(
+            {vol.Required("value"): vol.In(["singleton", "per_pipeline"])}
+        ),
+        "async_set_vad_mode",
+    )
+
     async def handle_ask_question(call: ServiceCall) -> dict[str, Any]:
         """Handle a Show View service call."""
         satellite_entity_id: str = call.data[ATTR_ENTITY_ID]

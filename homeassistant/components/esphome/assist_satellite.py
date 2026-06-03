@@ -706,12 +706,32 @@ class EsphomeAssistSatellite(
 
     async def _wrap_audio_stream(self) -> AsyncIterable[bytes]:
         """Yield audio chunks from the queue until None."""
+        _chunk_idx = 0
+        _debug_audio = bytearray()
         while True:
             chunk = await self._audio_queue.get()
             if not chunk:
                 break
 
+            _chunk_idx += 1
+            _debug_audio.extend(chunk)
+            if _chunk_idx == 1:
+                _LOGGER.warning("ESPHome audio stream started, chunk_size=%d", len(chunk))
+
             yield chunk
+
+        if _debug_audio:
+            try:
+                import wave, struct
+                wav_path = f"/config/debug_audio_{int(time.monotonic())}.wav"
+                with wave.open(wav_path, "wb") as wf:
+                    wf.setnchannels(1)
+                    wf.setsampwidth(2)
+                    wf.setframerate(16000)
+                    wf.writeframes(bytes(_debug_audio))
+                _LOGGER.warning("Debug WAV saved: %s (%d bytes, %.1fs)", wav_path, len(_debug_audio), len(_debug_audio) / 32000.0)
+            except Exception as e:
+                _LOGGER.warning("Failed to save debug WAV: %s", e)
 
     def _stop_pipeline(self) -> None:
         """Request pipeline to be stopped by ending the audio stream and continue processing."""
@@ -884,3 +904,6 @@ async def async_setup(hass: HomeAssistant) -> None:
             )
         ]
     )
+
+
+

@@ -87,6 +87,12 @@
     "assist_satellite": {
       "assist_satellite": {
         "name": "[%key:component::assist_satellite::entity_component::_::name%]"
+      },
+      "speech_threshold": {
+        "name": "Speech threshold"
+      },
+      "vad_timeout_seconds": {
+        "name": "VAD timeout"
       }
     },
     "climate": {

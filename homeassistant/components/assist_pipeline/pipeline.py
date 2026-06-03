@@ -55,13 +55,14 @@ from homeassistant.util import (
 from homeassistant.util.hass_dict import HassKey
 from homeassistant.util.limited_size_dict import LimitedSizeDict
 
-from .audio_enhancer import AudioEnhancer, EnhancedAudioChunk, MicroVadSpeexEnhancer
+from .audio_enhancer import AudioEnhancer, EnhancedAudioChunk, SileroVadSpeexEnhancer
 from .const import (
     ACKNOWLEDGE_PATH,
     BYTES_PER_CHUNK,
     CONF_DEBUG_RECORDING_DIR,
     DATA_CONFIG,
     DATA_LAST_WAKE_UP,
+    DATA_SILERO_VAD,
     DOMAIN,
     EVENT_DEBUG_RECORDING,
     MS_PER_CHUNK,
@@ -81,6 +82,11 @@ from .error import (
     WakeWordDetectionAborted,
     WakeWordDetectionError,
     WakeWordTimeoutError,
+)
+from .silero_vad_manager import (
+    SileroVadPerPipeline,
+    SileroVadSingleton,
+    SileroVadStream,
 )
 from .vad import AudioBuffer, VoiceActivityTimeout, VoiceCommandSegmenter, chunk_samples
 
@@ -538,8 +544,23 @@ class AudioSettings:
     is_vad_enabled: bool = True
     """True if VAD is used to determine the end of the voice command."""
 
-    silence_seconds: float = 0.7
+    silence_seconds: float = 2.0
     """Seconds of silence after voice command has ended."""
+
+    command_seconds: float = 2.0
+    """Minimum number of seconds for a voice command."""
+
+    before_command_speech_threshold: float = 0.5
+    """Probability threshold for speech before voice command."""
+
+    speech_threshold: float = 0.5
+    """Speech probability threshold for Silero VAD (0.0-1.0)."""
+
+    vad_mode: str = "per_pipeline"
+    """VAD session mode: 'singleton' (shared) or 'per_pipeline' (isolated)."""
+
+    vad_timeout_seconds: float = 30.0
+    """Max seconds for a voice command before forced timeout."""
 
     def __post_init__(self) -> None:
         """Verify settings post-initialization."""
@@ -549,6 +570,12 @@ class AudioSettings:
         if (self.auto_gain_dbfs < 0) or (self.auto_gain_dbfs > 31):
             raise ValueError("auto_gain_dbfs must be in [0, 31]")
 
+        if not (0.0 < self.speech_threshold <= 1.0):
+            raise ValueError("speech_threshold must be in (0.0, 1.0]")
+
+        if not (1.0 <= self.vad_timeout_seconds <= 60.0):
+            raise ValueError("vad_timeout_seconds must be in [1.0, 60.0]")
+
     @property
     def needs_processor(self) -> bool:
         """True if an audio processor is needed."""
@@ -557,6 +584,24 @@ class AudioSettings:
             or (self.noise_suppression_level > 0)
             or (self.auto_gain_dbfs > 0)
         )
+
+
+def _create_silero_vad(
+    hass: HomeAssistant, audio_settings: AudioSettings
+) -> SileroVadStream | SileroVadPerPipeline | None:
+    """Create a Silero VAD instance based on audio settings."""
+    if not audio_settings.is_vad_enabled:
+        _LOGGER.warning("Silero VAD: disabled (is_vad_enabled=False)")
+        return None
+    if audio_settings.vad_mode == "per_pipeline":
+        _LOGGER.debug("Silero VAD: creating per_pipeline instance")
+        return SileroVadPerPipeline()
+    if DATA_SILERO_VAD not in hass.data:
+        _LOGGER.warning("Silero VAD: singleton not found in hass.data, key=%s", DATA_SILERO_VAD)
+        return None
+    manager: SileroVadSingleton = hass.data[DATA_SILERO_VAD]
+    _LOGGER.debug("Silero VAD: creating stream from singleton")
+    return manager.create_stream()
 
 
 @dataclass
@@ -636,11 +681,25 @@ class PipelineRun:
 
         # Initialize with audio settings
         if self.audio_settings.needs_processor and (self.audio_enhancer is None):
-            # Default audio enhancer
-            self.audio_enhancer = MicroVadSpeexEnhancer(
+            _LOGGER.warning(
+                "PipelineRun: creating audio enhancer, vad_enabled=%s, vad_mode=%s, speech_threshold=%s",
+                self.audio_settings.is_vad_enabled,
+                self.audio_settings.vad_mode,
+                self.audio_settings.speech_threshold,
+            )
+            silero_vad = _create_silero_vad(self.hass, self.audio_settings)
+            _LOGGER.warning("PipelineRun: silero_vad created: %s", type(silero_vad).__name__ if silero_vad else "None")
+            self.audio_enhancer = SileroVadSpeexEnhancer(
                 self.audio_settings.auto_gain_dbfs,
                 self.audio_settings.noise_suppression_level,
                 self.audio_settings.is_vad_enabled,
+                silero_vad=silero_vad,
+            )
+        else:
+            _LOGGER.warning(
+                "PipelineRun: SKIPPING audio enhancer, needs_processor=%s, enhancer=%s",
+                self.audio_settings.needs_processor,
+                self.audio_enhancer is not None,
             )
 
     def __eq__(self, other: object) -> bool:
@@ -1000,7 +1059,11 @@ class PipelineRun:
             stt_vad: VoiceCommandSegmenter | None = None
             if self.audio_settings.is_vad_enabled:
                 stt_vad = VoiceCommandSegmenter(
-                    silence_seconds=self.audio_settings.silence_seconds
+                    silence_seconds=self.audio_settings.silence_seconds,
+                    command_seconds=self.audio_settings.command_seconds,
+                    timeout_seconds=self.audio_settings.vad_timeout_seconds,
+                    before_command_speech_threshold=self.audio_settings.before_command_speech_threshold,
+                    in_command_speech_threshold=self.audio_settings.speech_threshold,
                 )
 
             result = await self.stt_provider.async_process_audio_stream(
@@ -1057,13 +1120,21 @@ class PipelineRun:
     ) -> AsyncGenerator[bytes]:
         """Yield audio chunks until VAD detects silence or speech-to-text completes."""
         sent_vad_start = False
+        _chunk_count = 0
         async for chunk in audio_stream:
             self._capture_chunk(chunk.audio)
+            _chunk_count += 1
 
             if stt_vad is not None:
                 chunk_seconds = (len(chunk.audio) // sample_width) / sample_rate
+                if _chunk_count <= 10 or _chunk_count % 50 == 0:
+                    _LOGGER.warning(
+                        "STT_VAD chunk #%d: prob=%.3f, sec=%.3f, audio_len=%d",
+                        _chunk_count, chunk.speech_probability or -1.0, chunk_seconds, len(chunk.audio),
+                    )
                 if not stt_vad.process(chunk_seconds, chunk.speech_probability):
                     # Silence detected at the end of voice command
+                    _LOGGER.warning("STT_VAD: SILENCE detected at chunk #%d", _chunk_count)
                     self.process_event(
                         PipelineEvent(
                             PipelineEventType.STT_VAD_END,
@@ -1074,6 +1145,7 @@ class PipelineRun:
 
                 if stt_vad.in_command and (not sent_vad_start):
                     # Speech detected at start of voice command
+                    _LOGGER.warning("STT_VAD: SPEECH START at chunk #%d", _chunk_count)
                     self.process_event(
                         PipelineEvent(
                             PipelineEventType.STT_VAD_START,

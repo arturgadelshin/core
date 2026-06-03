@@ -25,6 +25,8 @@ class SatelliteDevice:
     auto_gain: int = 0
     volume_multiplier: float = 1.0
     vad_sensitivity: VadSensitivity = VadSensitivity.DEFAULT
+    speech_threshold: float = 0.5
+    vad_timeout_seconds: float = 15.0
 
     _is_active_listener: Callable[[], None] | None = None
     _is_muted_listener: Callable[[], None] | None = None
@@ -84,6 +86,22 @@ class SatelliteDevice:
         """Set VAD sensitivity."""
         if vad_sensitivity != self.vad_sensitivity:
             self.vad_sensitivity = vad_sensitivity
+            if self._audio_settings_listener is not None:
+                self._audio_settings_listener()
+
+    @callback
+    def set_speech_threshold(self, speech_threshold: float) -> None:
+        """Set Silero VAD speech probability threshold."""
+        if speech_threshold != self.speech_threshold:
+            self.speech_threshold = speech_threshold
+            if self._audio_settings_listener is not None:
+                self._audio_settings_listener()
+
+    @callback
+    def set_vad_timeout_seconds(self, vad_timeout_seconds: float) -> None:
+        """Set VAD timeout in seconds."""
+        if vad_timeout_seconds != self.vad_timeout_seconds:
+            self.vad_timeout_seconds = vad_timeout_seconds
             if self._audio_settings_listener is not None:
                 self._audio_settings_listener()
 
@@ -156,4 +174,18 @@ class SatelliteDevice:
         ent_reg = er.async_get(hass)
         return ent_reg.async_get_entity_id(
             "select", DOMAIN, f"{self.satellite_id}-vad_sensitivity"
+        )
+
+    def get_speech_threshold_entity_id(self, hass: HomeAssistant) -> str | None:
+        """Return entity id for Silero VAD speech threshold."""
+        ent_reg = er.async_get(hass)
+        return ent_reg.async_get_entity_id(
+            "number", DOMAIN, f"{self.satellite_id}-speech_threshold"
+        )
+
+    def get_vad_timeout_entity_id(self, hass: HomeAssistant) -> str | None:
+        """Return entity id for VAD timeout."""
+        ent_reg = er.async_get(hass)
+        return ent_reg.async_get_entity_id(
+            "number", DOMAIN, f"{self.satellite_id}-vad_timeout_seconds"
         )

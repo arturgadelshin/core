@@ -59,17 +59,32 @@ RUN uv pip install --no-cache-dir --index-url https://pypi.tuna.tsinghua.edu.cn/
 # RUN git clone --depth 1 https://github.com/home-assistant/hass-release ~/hass-release \
 #     && uv pip install -e ~/hass-release/
 
-RUN uv pip install --index-url https://pypi.tuna.tsinghua.edu.cn/simple "pycares>=4.4.0,<5.0.0" "aiodns>=3.2.0,<3.5.0"
 # Копируем зависимости и устанавливаем их
 COPY requirements.txt ./
 COPY package_constraints_fix.txt ./
 COPY homeassistant/package_constraints.txt homeassistant/package_constraints.txt
 RUN uv pip install --index-url https://pypi.tuna.tsinghua.edu.cn/simple -r requirements.txt -c package_constraints_fix.txt
 
+# Фикс: aiodns 3.x использует pycares type annotations, которых нет в pycares на Python 3.13
+# Добавляем 'from __future__ import annotations' чтобы annotations были ленивыми
+RUN AIODNS_INIT="$(python -c 'import importlib.util; print(importlib.util.find_spec("aiodns").origin)')" \
+    && sed -i '1s/^/from __future__ import annotations\n/' "$AIODNS_INIT"
+
+# Silero VAD: torch CPU-only + silero-vad
+RUN UV_HTTP_TIMEOUT=600 uv pip install --index-url https://pypi.tuna.tsinghua.edu.cn/simple --extra-index-url https://download.pytorch.org/whl/cpu torch torchaudio --no-deps \
+    && UV_HTTP_TIMEOUT=600 uv pip install --index-url https://pypi.tuna.tsinghua.edu.cn/simple silero-vad onnxruntime
+
 USER root
 # Копируем **весь ваш код** внутрь контейнера
 COPY . /workspaces/core
 WORKDIR /workspaces/core
+
+# Копируем JIT модель из silero-vad пакета к нашему компоненту
+RUN SILERO_MODEL=$(python -c "import silero_vad; import pathlib; print(pathlib.Path(silero_vad.__file__).parent / 'data' / 'silero_vad.jit')") \
+    && cp "$SILERO_MODEL" /workspaces/core/homeassistant/components/assist_pipeline/silero_vad.jit || true
+
+# Удаляем onnxruntime (не нужен, используем torch JIT), оставляем torch + silero-vad
+RUN uv pip uninstall -y onnxruntime || true
 
 # Устанавливаем Home Assistant в режиме разработки
 RUN uv pip install --index-url https://pypi.tuna.tsinghua.edu.cn/simple -e .

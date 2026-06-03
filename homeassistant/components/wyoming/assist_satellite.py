@@ -26,7 +26,7 @@ from wyoming.vad import VoiceStarted, VoiceStopped
 from wyoming.wake import Detect, Detection
 
 from homeassistant.components import assist_pipeline, ffmpeg, intent, tts
-from homeassistant.components.assist_pipeline import PipelineEvent
+from homeassistant.components.assist_pipeline import AudioSettings, PipelineEvent
 from homeassistant.components.assist_satellite import (
     AssistSatelliteAnnouncement,
     AssistSatelliteConfiguration,
@@ -155,6 +155,18 @@ class WyomingAssistSatellite(WyomingSatelliteEntity, AssistSatelliteEntity):
             tts.ATTR_PREFERRED_SAMPLE_CHANNELS: SAMPLE_CHANNELS,
             tts.ATTR_PREFERRED_SAMPLE_BYTES: SAMPLE_WIDTH,
         }
+
+    @callback
+    def _resolve_audio_settings(self) -> AudioSettings:
+        """Resolve audio settings from Wyoming satellite device."""
+        return AudioSettings(
+            silence_seconds=self._resolve_vad_sensitivity(),
+            noise_suppression_level=self.device.noise_suppression_level,
+            auto_gain_dbfs=self.device.auto_gain,
+            volume_multiplier=self.device.volume_multiplier,
+            speech_threshold=self.device.speech_threshold,
+            vad_timeout_seconds=self.device.vad_timeout_seconds,
+        )
 
     async def async_added_to_hass(self) -> None:
         """Run when entity about to be added to hass."""

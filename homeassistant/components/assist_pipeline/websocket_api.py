@@ -96,6 +96,17 @@ def async_register_websocket_api(hass: HomeAssistant) -> None:
                             vol.Optional("volume_multiplier"): float,
                             # Advanced use cases/testing
                             vol.Optional("no_vad"): bool,
+                            vol.Optional("speech_threshold"): vol.All(
+                                vol.Coerce(float),
+                                vol.Range(min=0.01, max=1.0),
+                            ),
+                            vol.Optional("vad_mode"): vol.In(
+                                ["singleton", "per_pipeline"]
+                            ),
+                            vol.Optional("vad_timeout_seconds"): vol.All(
+                                vol.Coerce(float),
+                                vol.Range(min=1.0, max=60.0),
+                            ),
                         }
                     },
                     extra=vol.ALLOW_EXTRA,
@@ -213,6 +224,9 @@ async def websocket_run(
             auto_gain_dbfs=msg_input.get("auto_gain_dbfs", 0),
             volume_multiplier=msg_input.get("volume_multiplier", 1.0),
             is_vad_enabled=not msg_input.get("no_vad", False),
+            speech_threshold=msg_input.get("speech_threshold", 0.5),
+            vad_mode=msg_input.get("vad_mode", "singleton"),
+            vad_timeout_seconds=msg_input.get("vad_timeout_seconds", 15.0),
         )
     elif start_stage == PipelineStage.INTENT:
         # Input to conversation agent
