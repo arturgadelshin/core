@@ -87,6 +87,9 @@ class VoiceCommandSegmenter:
     timeout_seconds: float = 15.0
     """Maximum number of seconds before stopping with timeout=True."""
 
+    before_command_timeout_seconds: float = 4.0
+    """Maximum seconds of silence before voice command starts. Aborts if no speech detected."""
+
     reset_seconds: float = 1.0
     """Seconds before reset start/stop time counters."""
 
@@ -114,6 +117,9 @@ class VoiceCommandSegmenter:
     _timeout_seconds_left: float = 0.0
     """Seconds left before considering voice command timed out."""
 
+    _before_command_timeout_left: float = 0.0
+    """Seconds left before aborting (no speech detected after activation)."""
+
     _reset_seconds_left: float = 0.0
     """Seconds left before resetting start/stop time counters."""
 
@@ -127,6 +133,7 @@ class VoiceCommandSegmenter:
         self._command_seconds_left = self.command_seconds - self.speech_seconds
         self._silence_seconds_left = self.silence_seconds
         self._timeout_seconds_left = self.timeout_seconds
+        self._before_command_timeout_left = self.before_command_timeout_seconds
         self._reset_seconds_left = self.reset_seconds
         self.in_command = False
 
@@ -152,7 +159,18 @@ class VoiceCommandSegmenter:
             speech_probability = 0.0
 
         if not self.in_command:
-            # Before command
+            # Before command — abort if no speech detected within timeout
+            self._before_command_timeout_left -= chunk_seconds
+            if self._before_command_timeout_left <= 0:
+                _LOGGER.warning(
+                    "VAD BEFORE_COMMAND_TIMEOUT after %.1fs (limit=%.1fs)",
+                    self.before_command_timeout_seconds - self._before_command_timeout_left,
+                    self.before_command_timeout_seconds,
+                )
+                self.reset()
+                self.timed_out = True
+                return False
+
             is_speech = speech_probability > self.before_command_speech_threshold
             if is_speech:
                 self._reset_seconds_left = self.reset_seconds

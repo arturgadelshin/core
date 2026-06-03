@@ -148,6 +148,14 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
         "async_set_vad_mode",
     )
 
+    component.async_register_entity_service(
+        "set_before_command_timeout",
+        cv.make_entity_service_schema(
+            {vol.Required("value"): vol.All(vol.Coerce(float), vol.Range(min=1.0, max=30.0))}
+        ),
+        "async_set_before_command_timeout",
+    )
+
     async def handle_ask_question(call: ServiceCall) -> dict[str, Any]:
         """Handle a Show View service call."""
         satellite_entity_id: str = call.data[ATTR_ENTITY_ID]

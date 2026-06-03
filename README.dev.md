@@ -82,8 +82,8 @@ docker restart ha-test
 
 | Файл | Описание |
 |------|----------|
-| `homeassistant/components/assist_satellite/entity.py` | **Изменён.** 6 настраиваемых атрибутов с RestoreEntity-персистентностью |
-| `homeassistant/components/assist_satellite/__init__.py` | **Изменён.** Регистрация 6 сервисов VAD |
+| `homeassistant/components/assist_satellite/entity.py` | **Изменён.** 7 настраиваемых атрибутов с RestoreEntity-персистентностью |
+| `homeassistant/components/assist_satellite/__init__.py` | **Изменён.** Регистрация 7 сервисов VAD |
 | `homeassistant/components/assist_satellite/services.yaml` | **Изменён.** Определения сервисов с русскими описаниями и ползунками |
 
 ### Прочие файлы

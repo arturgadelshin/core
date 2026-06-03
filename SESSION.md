@@ -1,6 +1,6 @@
 # Сессия разработки: Silero VAD для Home Assistant
 
-**Дата:** 01-03.06.2026
+**Дата:** 01-03.06.2026 (обновлено 03.06)
 **Репозиторий:** https://github.com/arturgadelshin/core
 **Рабочая директория:** `E:\Project_OpenCode\Core\core`
 **Задача:** Заменить встроенный MicroWakeWord VAD на Silero VAD в форке Home Assistant
@@ -45,11 +45,19 @@
 - Исправлено: параметры VAD берутся из атрибутов сущности, а не из VadSensitivity enum
 
 ### 7. Настраиваемые параметры VAD
-- 6 параметров с персистентностью (RestoreEntity) для каждого спутника
-- 6 сервисов с русскими описаниями и ползунками в UI
+- 7 параметров с персистентностью (RestoreEntity) для каждого спутника
+- 7 сервисов с русскими описаниями и ползунками в UI
 - `services.yaml` с полным описанием на русском
+- Параметры: speech_threshold, before_command_speech_threshold, silence_seconds,
+  command_seconds, vad_timeout_seconds, vad_mode, before_command_timeout_seconds
 
-### 8. Документация
+### 8. Таймаут до начала команды
+- Добавлен `before_command_timeout_seconds` (default 4.0с)
+- Если после активации за N секунд не обнаружена речь → `VAD BEFORE_COMMAND_TIMEOUT`, прерывание
+- Решает проблему: ассистент висел 30с при случайной активации без речи
+- Настраивается через сервис `assist_satellite.set_before_command_timeout` (1.0-30.0с)
+
+### 9. Документация
 - `SILERO_VAD.md` — полная документация: архитектура, параметры, сервисы, troubleshooting
 - `README.dev.md` — обзор проекта, структура файлов
 - `SESSION.md` — история сессии
@@ -66,6 +74,7 @@
 | `command_seconds` | **2.0** | Минимальная длительность команды |
 | `vad_timeout_seconds` | **30.0** | Максимальная длина записи |
 | `vad_mode` | **per_pipeline** | Режим VAD (singleton / per_pipeline) |
+| `before_command_timeout_seconds` | **4.0** | Таймаут до начала команды (прерывание если нет речи) |
 
 ---
 
@@ -77,8 +86,9 @@
 - [x] Интеграция Silero VAD (torch JIT)
 - [x] Буферизация 10ms → 32ms
 - [x] Исправление обрыва на паузах
-- [x] Настраиваемые параметры VAD (6 сервисов)
+- [x] Настраиваемые параметры VAD (7 сервисов)
 - [x] Описания сервисов на русском
+- [x] Таймаут до начала команды (before_command_timeout_seconds)
 - [x] Документация (SILERO_VAD.md, README.dev.md, SESSION.md)
 - [ ] Очистить отладочное WARNING-логирование
 - [ ] Убрать debug WAV-сохранение из esphome/assist_satellite.py
@@ -121,12 +131,12 @@
 | `assist_pipeline/silero_vad_manager.py` | Новый | SileroVadSingleton, SileroVadStream, SileroVadPerPipeline, загрузка torch JIT |
 | `assist_pipeline/audio_enhancer.py` | Изменён | SileroVadSpeexEnhancer с 32ms буферизацией |
 | `assist_pipeline/const.py` | Изменён | DATA_SILERO_VAD, SILERO_* константы |
-| `assist_pipeline/pipeline.py` | Изменён | AudioSettings (6 параметров), _create_silero_vad(), отладочное логирование |
+| `assist_pipeline/pipeline.py` | Изменён | AudioSettings (7 параметров), _create_silero_vad(), отладочное логирование |
 | `assist_pipeline/__init__.py` | Изменён | Загрузка singleton Silero при старте HA |
 | `assist_pipeline/vad.py` | Изменён | Отладочное логирование VoiceCommandSegmenter |
-| `assist_satellite/entity.py` | Изменён | 6 атрибутов + RestoreEntity + 6 service handlers |
-| `assist_satellite/__init__.py` | Изменён | Регистрация 6 сервисов |
-| `assist_satellite/services.yaml` | Изменён | 6 сервисов с русскими описаниями и ползунками |
+| `assist_satellite/entity.py` | Изменён | 7 атрибутов + RestoreEntity + 7 service handlers |
+| `assist_satellite/__init__.py` | Изменён | Регистрация 7 сервисов |
+| `assist_satellite/services.yaml` | Изменён | 7 сервисов с русскими описаниями и ползунками |
 | `esphome/assist_satellite.py` | Изменён | Debug WAV-сохранение |
 | `Dockerfile.my_dev` | Изменён | silero-vad, torch, патч aiodns |
 | `SILERO_VAD.md` | Новый | Полная документация |

@@ -151,6 +151,7 @@ class AssistSatelliteEntity(RestoreEntity):
     _command_seconds: float = 2.0
     _before_command_speech_threshold: float = 0.5
     _vad_mode: str = "per_pipeline"
+    _before_command_timeout_seconds: float = 4.0
     __assist_satellite_state = AssistSatelliteState.IDLE
 
     @final
@@ -179,6 +180,7 @@ class AssistSatelliteEntity(RestoreEntity):
             "command_seconds": self._command_seconds,
             "before_command_speech_threshold": self._before_command_speech_threshold,
             "vad_mode": self._vad_mode,
+            "before_command_timeout_seconds": self._before_command_timeout_seconds,
         }
 
     async def async_added_to_hass(self) -> None:
@@ -213,6 +215,11 @@ class AssistSatelliteEntity(RestoreEntity):
             if (val := last_state.attributes.get("vad_mode")) is not None:
                 if val in ("singleton", "per_pipeline"):
                     self._vad_mode = val
+            if (val := last_state.attributes.get("before_command_timeout_seconds")) is not None:
+                try:
+                    self._before_command_timeout_seconds = float(val)
+                except (ValueError, TypeError):
+                    pass
 
     @property
     def tts_options(self) -> dict[str, Any] | None:
@@ -714,6 +721,7 @@ class AssistSatelliteEntity(RestoreEntity):
             speech_threshold=self._speech_threshold,
             vad_timeout_seconds=self._vad_timeout_seconds,
             vad_mode=self._vad_mode,
+            before_command_timeout_seconds=self._before_command_timeout_seconds,
         )
 
     async def async_set_speech_threshold(self, value: float) -> None:
@@ -746,6 +754,11 @@ class AssistSatelliteEntity(RestoreEntity):
         if value in ("singleton", "per_pipeline"):
             self._vad_mode = value
             self.async_write_ha_state()
+
+    async def async_set_before_command_timeout(self, value: float) -> None:
+        """Set timeout before voice command starts (abort if no speech)."""
+        self._before_command_timeout_seconds = float(max(1.0, min(30.0, value)))
+        self.async_write_ha_state()
 
     async def _resolve_announcement_media_id(
         self,

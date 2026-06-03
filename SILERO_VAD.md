@@ -72,6 +72,7 @@ STT (GigaAM через wyoming-onnxasr)
 | `command_seconds` | **2.0** | 0.3 — 10.0 |
 | `vad_timeout_seconds` | **30.0** | 1.0 — 60.0 |
 | `vad_mode` | **per_pipeline** | singleton / per_pipeline |
+| `before_command_timeout_seconds` | **4.0** | 1.0 — 30.0 |
 
 ### Подробное описание параметров
 
@@ -233,6 +234,35 @@ target:
 
 ---
 
+#### 7. `before_command_timeout_seconds` — таймаут до начала команды
+
+Максимальное время ожидания начала речи после активации ассистента.
+Если за это время вероятность речи не превысила `before_command_speech_threshold`,
+запись прерывается (`VAD BEFORE_COMMAND_TIMEOUT`) и ассистент возвращается в ожидание.
+
+- **1.0-2.0с** — быстро прерывает при случайной активации, но требует быстрой реакции
+- **4.0с** (default) — сбалансированный, даёт время на подготовку к речи
+- **5.0-10.0с** — для случаев когда пользователь долго думает перед фразой
+
+**Когда менять:**
+- Увеличить если ассистент слишком быстро прерывается до того как вы начали говорить
+- Уменьшить если при случайной активации долго висит в режиме прослушивания
+
+**Как изменить:**
+
+Вариант 1 — через сервис в UI: **Developer Tools → Services → `assist_satellite.set_before_command_timeout`** → выберите target entity → установите значение ползунком
+
+Вариант 2 — через YAML:
+```yaml
+service: assist_satellite.set_before_command_timeout
+data:
+  value: 4.0
+target:
+  entity_id: assist_satellite.gg_voice_tdm_none
+```
+
+---
+
 ## Просмотр текущих значений
 
 **Developer Tools → States** → найти сущность спутника (например `assist_satellite.gg_voice_tdm_none`) → атрибуты в карточке.
@@ -245,6 +275,7 @@ silence_seconds: {{ state_attr('assist_satellite.gg_voice_tdm_none', 'silence_se
 command_seconds: {{ state_attr('assist_satellite.gg_voice_tdm_none', 'command_seconds') }}
 vad_timeout_seconds: {{ state_attr('assist_satellite.gg_voice_tdm_none', 'vad_timeout_seconds') }}
 vad_mode: {{ state_attr('assist_satellite.gg_voice_tdm_none', 'vad_mode') }}
+before_command_timeout_seconds: {{ state_attr('assist_satellite.gg_voice_tdm_none', 'before_command_timeout_seconds') }}
 ```
 
 ---
@@ -257,15 +288,20 @@ vad_mode: {{ state_attr('assist_satellite.gg_voice_tdm_none', 'vad_mode') }}
 
 ```
 Аудио → Silero prob
+  _before_command_timeout_left -= 10ms
+  если _before_command_timeout_left <= 0:
+      → BEFORE_COMMAND_TIMEOUT (прерывание, нет речи)
+
   prob > before_command_speech_threshold? ─── ДА → _speech_seconds_left -= 10ms
-                                                     если _speech_seconds_left <= 0:
-                                                         → COMMAND_START (фаза 2)
+                                                      если _speech_seconds_left <= 0:
+                                                          → COMMAND_START (фаза 2)
   prob <= before_command_speech_threshold? ─ НЕТ → _reset_seconds_left -= 10ms
-                                                     если _reset_seconds_left <= 0:
-                                                         сброс счётчика речи
+                                                      если _reset_seconds_left <= 0:
+                                                          сброс счётчика речи
 ```
 
 - `speech_seconds` (зашито 0.3с) — сколько непрерывной речи нужно для старта
+- `before_command_timeout_seconds` (default 4.0с) — максимальное ожидание до старта команды
 
 ### Фаза 2: Запись команды (`in_command=True`)
 
@@ -322,6 +358,7 @@ silence_seconds: 2.0
 command_seconds: 2.0
 vad_timeout_seconds: 30
 vad_mode: per_pipeline
+before_command_timeout_seconds: 4.0
 ```
 
 ### Шумное помещение
@@ -332,6 +369,7 @@ silence_seconds: 1.0
 command_seconds: 1.0
 vad_timeout_seconds: 15
 vad_mode: per_pipeline
+before_command_timeout_seconds: 3.0
 ```
 
 ### Длинные диктовки
@@ -342,6 +380,7 @@ silence_seconds: 3.0
 command_seconds: 3.0
 vad_timeout_seconds: 60
 vad_mode: per_pipeline
+before_command_timeout_seconds: 6.0
 ```
 
 ---
@@ -368,6 +407,13 @@ vad_mode: per_pipeline
 2. Уменьшить `silence_seconds` (попробовать 1.0)
 
 **Developer Tools → Services → `assist_satellite.set_speech_threshold`** → установите 0.7
+
+### Ассистент висит после активации, если молчать
+
+1. Уменьшить `before_command_timeout_seconds` (попробовать 2.0-3.0)
+2. Это время ожидания речи после нажатия кнопки/активации
+
+**Developer Tools → Services → `assist_satellite.set_before_command_timeout`** → установите 3.0
 
 ### Ассистент сразу обрывает (prob = -1.0 или ошибка)
 
@@ -405,6 +451,7 @@ docker restart ha-test
 | `VAD COMMAND_START: sil_sec=X cmd_sec=X threshold=X` | `vad.py` | Параметры при старте команды |
 | `VAD SILENCE_FINISH: sil_left=X cmd_left=X prob=X` | `vad.py` | Счётчики при обрыве |
 | `VAD TIMEOUT after Xs` | `vad.py` | Таймаут записи |
+| `VAD BEFORE_COMMAND_TIMEOUT after Xs` | `vad.py` | Таймаут до начала команды (нет речи после активации) |
 | `PipelineRun: creating audio enhancer, vad_mode=X` | `pipeline.py` | Создание enhancer с параметрами |
 
 **Для отключения** — заменить `_LOGGER.warning` на `_LOGGER.debug` в соответствующих файлах.
@@ -425,8 +472,8 @@ homeassistant/components/
 │   └── silero_vad.onnx          # ONNX модель (НЕ ИСПОЛЬЗУЕТСЯ — сломана)
 │
 ├── assist_satellite/
-│   ├── __init__.py              # Регистрация 6 сервисов VAD
-│   ├── entity.py                # AssistSatelliteEntity с 6 атрибутами + RestoreEntity
+│   ├── __init__.py              # Регистрация 7 сервисов VAD
+│   ├── entity.py                # AssistSatelliteEntity с 7 атрибутами + RestoreEntity
 │   └── services.yaml            # Определения сервисов (русские описания, ползунки)
 │
 └── esphome/

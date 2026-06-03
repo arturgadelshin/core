@@ -247,3 +247,25 @@ set_vad_mode:
           options:
             - singleton
             - per_pipeline
+set_before_command_timeout:
+  name: Таймаут до начала команды
+  description: >-
+    Максимальное время ожидания начала речи после активации ассистента.
+    Если за это время не обнаружена речь (вероятность не превышает порог
+    начала команды), запись прерывается и ассистент возвращается в режим ожидания.
+    Помогает не висеть 30 секунд при случайной активации без речи.
+    По умолчанию: 4.0 секунды.
+  target:
+    entity:
+      domain: assist_satellite
+  fields:
+    value:
+      name: Таймаут до речи (секунды)
+      required: true
+      selector:
+        number:
+          min: 1
+          max: 30
+          step: 0.5
+          mode: slider
+          unit_of_measurement: s

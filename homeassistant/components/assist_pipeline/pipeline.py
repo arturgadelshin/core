@@ -556,11 +556,14 @@ class AudioSettings:
     speech_threshold: float = 0.5
     """Speech probability threshold for Silero VAD (0.0-1.0)."""
 
+    vad_timeout_seconds: float = 30.0
+    """Maximum seconds before stopping with timeout."""
+
+    before_command_timeout_seconds: float = 4.0
+    """Maximum seconds of silence before voice command starts (abort if no speech)."""
+
     vad_mode: str = "per_pipeline"
     """VAD session mode: 'singleton' (shared) or 'per_pipeline' (isolated)."""
-
-    vad_timeout_seconds: float = 30.0
-    """Max seconds for a voice command before forced timeout."""
 
     def __post_init__(self) -> None:
         """Verify settings post-initialization."""
@@ -1064,6 +1067,7 @@ class PipelineRun:
                     timeout_seconds=self.audio_settings.vad_timeout_seconds,
                     before_command_speech_threshold=self.audio_settings.before_command_speech_threshold,
                     in_command_speech_threshold=self.audio_settings.speech_threshold,
+                    before_command_timeout_seconds=self.audio_settings.before_command_timeout_seconds,
                 )
 
             result = await self.stt_provider.async_process_audio_stream(
