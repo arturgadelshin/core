@@ -7,6 +7,8 @@ import sqlite3
 from pathlib import Path
 from typing import Any
 
+import yaml
+
 from homeassistant.core import HomeAssistant
 
 _LOGGER = logging.getLogger(__name__)
@@ -14,32 +16,21 @@ _LOGGER = logging.getLogger(__name__)
 DB_DIR = "assist_satellite_settings"
 DB_FILENAME = "vad_settings.db"
 
-PARAM_NAMES = {
-    "speech_threshold",
-    "before_command_speech_threshold",
-    "silence_seconds",
-    "command_seconds",
-    "vad_timeout_seconds",
-    "vad_mode",
-    "before_command_timeout_seconds",
-    "noise_suppression_level",
-    "auto_gain_dbfs",
+CONFIG_FILENAME = "conf_assist_pipeline.yaml"
+
+HARDCODED_DEFAULTS = {
+    "speech_threshold": 0.5,
+    "before_command_speech_threshold": 0.5,
+    "silence_seconds": 2.0,
+    "command_seconds": 1.5,
+    "vad_timeout_seconds": 30.0,
+    "vad_mode": "per_pipeline",
+    "before_command_timeout_seconds": 5.0,
+    "noise_suppression_level": 0,
+    "auto_gain_dbfs": 0,
 }
 
-CREATE_TABLE = """
-CREATE TABLE IF NOT EXISTS satellite_settings (
-    entity_id TEXT PRIMARY KEY,
-    speech_threshold REAL DEFAULT 0.5,
-    before_command_speech_threshold REAL DEFAULT 0.5,
-    silence_seconds REAL DEFAULT 2.0,
-    command_seconds REAL DEFAULT 2.0,
-    vad_timeout_seconds REAL DEFAULT 30.0,
-    vad_mode TEXT DEFAULT 'per_pipeline',
-    before_command_timeout_seconds REAL DEFAULT 4.0,
-    noise_suppression_level INTEGER DEFAULT 0,
-    auto_gain_dbfs INTEGER DEFAULT 0
-)
-"""
+PARAM_NAMES = set(HARDCODED_DEFAULTS.keys())
 
 
 class VadSettingsStore:
@@ -56,7 +47,20 @@ class VadSettingsStore:
 
     def _init_db(self) -> None:
         with self._get_conn() as conn:
-            conn.execute(CREATE_TABLE)
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS satellite_settings (
+                    entity_id TEXT PRIMARY KEY,
+                    speech_threshold REAL DEFAULT 0.5,
+                    before_command_speech_threshold REAL DEFAULT 0.5,
+                    silence_seconds REAL DEFAULT 2.0,
+                    command_seconds REAL DEFAULT 1.5,
+                    vad_timeout_seconds REAL DEFAULT 30.0,
+                    vad_mode TEXT DEFAULT 'per_pipeline',
+                    before_command_timeout_seconds REAL DEFAULT 5.0,
+                    noise_suppression_level INTEGER DEFAULT 0,
+                    auto_gain_dbfs INTEGER DEFAULT 0
+                )
+            """)
         _LOGGER.info("VAD settings DB initialized: %s", self._db_path)
 
     def get(self, entity_id: str) -> dict[str, Any] | None:
@@ -115,10 +119,42 @@ class VadSettingsStore:
 
 
 DATA_VAD_SETTINGS = "assist_satellite_vad_settings"
+DATA_PIPELINE_DEFAULTS = "assist_pipeline_defaults"
+
+
+def load_yaml_defaults(config_dir: str) -> dict[str, Any]:
+    """Load defaults from conf_assist_pipeline.yaml."""
+    config_path = Path(config_dir) / CONFIG_FILENAME
+    if not config_path.exists():
+        return dict(HARDCODED_DEFAULTS)
+    try:
+        with open(config_path) as f:
+            data = yaml.safe_load(f) or {}
+        yaml_defaults = data.get("assist_pipeline", {})
+        merged = dict(HARDCODED_DEFAULTS)
+        for k in PARAM_NAMES:
+            if k in yaml_defaults:
+                merged[k] = yaml_defaults[k]
+        return merged
+    except Exception as ex:
+        _LOGGER.warning("Failed to load %s: %s, using hardcoded defaults", config_path, ex)
+        return dict(HARDCODED_DEFAULTS)
+
+
+def get_pipeline_defaults(hass: HomeAssistant) -> dict[str, Any]:
+    """Get pipeline defaults from hass.data (loaded during setup)."""
+    return hass.data.get(DATA_PIPELINE_DEFAULTS, HARDCODED_DEFAULTS)
 
 
 async def async_get_store(hass: HomeAssistant) -> VadSettingsStore:
-    """Get or create the VAD settings store."""
+    """Get or create the VAD settings store and load config defaults."""
+    if DATA_PIPELINE_DEFAULTS not in hass.data:
+        defaults = await hass.async_add_executor_job(
+            load_yaml_defaults, hass.config.config_dir
+        )
+        hass.data[DATA_PIPELINE_DEFAULTS] = defaults
+        _LOGGER.info("Loaded pipeline defaults: %s", defaults)
+
     if DATA_VAD_SETTINGS in hass.data:
         return hass.data[DATA_VAD_SETTINGS]
 

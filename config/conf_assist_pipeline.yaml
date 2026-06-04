@@ -1,0 +1,32 @@
+# Default values for Assist Pipeline VAD / audio processing.
+# These are used when no per-device setting is saved in the SQLite DB.
+# To override for a specific satellite, use HA services (Developer Tools → Services).
+
+assist_pipeline:
+
+  # VAD mode: 'singleton' (shared model) or 'per_pipeline' (isolated)
+  vad_mode: per_pipeline
+
+  # Seconds of silence before aborting (no speech after activation)
+  before_command_timeout_seconds: 5.0
+
+  # Minimum command duration in seconds
+  command_seconds: 1.5
+
+  # Seconds of silence after voice command has ended
+  silence_seconds: 2.0
+
+  # Speech probability threshold during voice command (0.1 - 1.0)
+  speech_threshold: 0.5
+
+  # Speech probability threshold for detecting command start (0.05 - 0.9)
+  before_command_speech_threshold: 0.5
+
+  # Maximum recording length in seconds
+  vad_timeout_seconds: 30.0
+
+  # Noise suppression level: 0=off, 1=min, 2=medium, 3=high, 4=max
+  noise_suppression_level: 0
+
+  # Automatic gain in dbFS: 0=off, 1-31
+  auto_gain_dbfs: 0

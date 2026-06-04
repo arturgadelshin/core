@@ -188,11 +188,11 @@ class AssistSatelliteEntity(RestoreEntity):
         }
 
     async def async_added_to_hass(self) -> None:
-        """Load VAD settings from SQLite store."""
+        """Load VAD settings from SQLite store or config defaults."""
         await super().async_added_to_hass()
 
         try:
-            from .vad_settings_db import async_get_store
+            from .vad_settings_db import async_get_store, get_pipeline_defaults
             store = await async_get_store(self.hass)
             settings = await self.hass.async_add_executor_job(
                 store.get, self.entity_id
@@ -201,22 +201,34 @@ class AssistSatelliteEntity(RestoreEntity):
             _LOGGER.warning("Failed to load VAD settings from DB: %s", ex)
             settings = None
 
+        defaults = get_pipeline_defaults(self.hass)
+
         if settings is not None:
-            self._speech_threshold = float(settings.get("speech_threshold", 0.5))
-            self._vad_timeout_seconds = float(settings.get("vad_timeout_seconds", 30.0))
-            self._silence_seconds = float(settings.get("silence_seconds", 2.0))
-            self._command_seconds = float(settings.get("command_seconds", 2.0))
+            self._speech_threshold = float(settings.get("speech_threshold", defaults["speech_threshold"]))
+            self._vad_timeout_seconds = float(settings.get("vad_timeout_seconds", defaults["vad_timeout_seconds"]))
+            self._silence_seconds = float(settings.get("silence_seconds", defaults["silence_seconds"]))
+            self._command_seconds = float(settings.get("command_seconds", defaults["command_seconds"]))
             self._before_command_speech_threshold = float(
-                settings.get("before_command_speech_threshold", 0.5)
+                settings.get("before_command_speech_threshold", defaults["before_command_speech_threshold"])
             )
-            self._vad_mode = str(settings.get("vad_mode", "per_pipeline"))
+            self._vad_mode = str(settings.get("vad_mode", defaults["vad_mode"]))
             self._before_command_timeout_seconds = float(
-                settings.get("before_command_timeout_seconds", 4.0)
+                settings.get("before_command_timeout_seconds", defaults["before_command_timeout_seconds"])
             )
             self._noise_suppression_level = int(
-                settings.get("noise_suppression_level", 0)
+                settings.get("noise_suppression_level", defaults["noise_suppression_level"])
             )
-            self._auto_gain_dbfs = int(settings.get("auto_gain_dbfs", 0))
+            self._auto_gain_dbfs = int(settings.get("auto_gain_dbfs", defaults["auto_gain_dbfs"]))
+        else:
+            self._speech_threshold = float(defaults["speech_threshold"])
+            self._vad_timeout_seconds = float(defaults["vad_timeout_seconds"])
+            self._silence_seconds = float(defaults["silence_seconds"])
+            self._command_seconds = float(defaults["command_seconds"])
+            self._before_command_speech_threshold = float(defaults["before_command_speech_threshold"])
+            self._vad_mode = str(defaults["vad_mode"])
+            self._before_command_timeout_seconds = float(defaults["before_command_timeout_seconds"])
+            self._noise_suppression_level = int(defaults["noise_suppression_level"])
+            self._auto_gain_dbfs = int(defaults["auto_gain_dbfs"])
 
     @property
     def tts_options(self) -> dict[str, Any] | None:

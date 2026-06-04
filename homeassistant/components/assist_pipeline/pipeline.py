@@ -547,7 +547,7 @@ class AudioSettings:
     silence_seconds: float = 2.0
     """Seconds of silence after voice command has ended."""
 
-    command_seconds: float = 2.0
+    command_seconds: float = 1.5
     """Minimum number of seconds for a voice command."""
 
     before_command_speech_threshold: float = 0.5
@@ -559,7 +559,7 @@ class AudioSettings:
     vad_timeout_seconds: float = 30.0
     """Maximum seconds before stopping with timeout."""
 
-    before_command_timeout_seconds: float = 4.0
+    before_command_timeout_seconds: float = 5.0
     """Maximum seconds of silence before voice command starts (abort if no speech)."""
 
     vad_mode: str = "per_pipeline"

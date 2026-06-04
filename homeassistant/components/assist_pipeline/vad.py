@@ -87,7 +87,7 @@ class VoiceCommandSegmenter:
     timeout_seconds: float = 15.0
     """Maximum number of seconds before stopping with timeout=True."""
 
-    before_command_timeout_seconds: float = 4.0
+    before_command_timeout_seconds: float = 5.0
     """Maximum seconds of silence before voice command starts. Aborts if no speech detected."""
 
     reset_seconds: float = 1.0
