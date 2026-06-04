@@ -684,14 +684,7 @@ class PipelineRun:
 
         # Initialize with audio settings
         if self.audio_settings.needs_processor and (self.audio_enhancer is None):
-            _LOGGER.warning(
-                "PipelineRun: creating audio enhancer, vad_enabled=%s, vad_mode=%s, speech_threshold=%s",
-                self.audio_settings.is_vad_enabled,
-                self.audio_settings.vad_mode,
-                self.audio_settings.speech_threshold,
-            )
             silero_vad = _create_silero_vad(self.hass, self.audio_settings)
-            _LOGGER.warning("PipelineRun: silero_vad created: %s", type(silero_vad).__name__ if silero_vad else "None")
             self.audio_enhancer = SileroVadSpeexEnhancer(
                 self.audio_settings.auto_gain_dbfs,
                 self.audio_settings.noise_suppression_level,
@@ -699,11 +692,7 @@ class PipelineRun:
                 silero_vad=silero_vad,
             )
         else:
-            _LOGGER.warning(
-                "PipelineRun: SKIPPING audio enhancer, needs_processor=%s, enhancer=%s",
-                self.audio_settings.needs_processor,
-                self.audio_enhancer is not None,
-            )
+            pass
 
     def __eq__(self, other: object) -> bool:
         """Compare pipeline runs by id."""
@@ -1131,14 +1120,7 @@ class PipelineRun:
 
             if stt_vad is not None:
                 chunk_seconds = (len(chunk.audio) // sample_width) / sample_rate
-                if _chunk_count <= 10 or _chunk_count % 50 == 0:
-                    _LOGGER.warning(
-                        "STT_VAD chunk #%d: prob=%.3f, sec=%.3f, audio_len=%d",
-                        _chunk_count, chunk.speech_probability or -1.0, chunk_seconds, len(chunk.audio),
-                    )
                 if not stt_vad.process(chunk_seconds, chunk.speech_probability):
-                    # Silence detected at the end of voice command
-                    _LOGGER.warning("STT_VAD: SILENCE detected at chunk #%d", _chunk_count)
                     self.process_event(
                         PipelineEvent(
                             PipelineEventType.STT_VAD_END,
@@ -1148,8 +1130,6 @@ class PipelineRun:
                     break
 
                 if stt_vad.in_command and (not sent_vad_start):
-                    # Speech detected at start of voice command
-                    _LOGGER.warning("STT_VAD: SPEECH START at chunk #%d", _chunk_count)
                     self.process_event(
                         PipelineEvent(
                             PipelineEventType.STT_VAD_START,

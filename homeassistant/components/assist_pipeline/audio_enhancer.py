@@ -91,11 +91,6 @@ class SileroVadSpeexEnhancer(AudioEnhancer):
                 self._audio_buffer = self._audio_buffer[SILERO_BYTES_PER_CHUNK:]
                 speech_probability = self._silero_vad.process_chunk(chunk_32ms)
                 self._last_probability = speech_probability
-                if self._chunk_count <= 30 or self._chunk_count % 100 == 0 or speech_probability > 0.1:
-                    _LOGGER.warning(
-                        "Silero prob=%.4f chunk#%d",
-                        speech_probability, self._chunk_count,
-                    )
 
         return EnhancedAudioChunk(
             audio=audio,

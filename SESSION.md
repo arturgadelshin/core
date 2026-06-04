@@ -49,7 +49,8 @@
 - 7 сервисов с русскими описаниями и ползунками в UI
 - `services.yaml` с полным описанием на русском
 - Параметры: speech_threshold, before_command_speech_threshold, silence_seconds,
-  command_seconds, vad_timeout_seconds, vad_mode, before_command_timeout_seconds
+  command_seconds, vad_timeout_seconds, vad_mode, before_command_timeout_seconds,
+  noise_suppression_level, auto_gain_dbfs
 
 ### 8. Таймаут до начала команды
 - Добавлен `before_command_timeout_seconds` (default 4.0с)
@@ -57,7 +58,13 @@
 - Решает проблему: ассистент висел 30с при случайной активации без речи
 - Настраивается через сервис `assist_satellite.set_before_command_timeout` (1.0-30.0с)
 
-### 9. Документация
+### 9. Шумоподавление и автоусиление
+- Добавлены `noise_suppression_level` (0-4) и `auto_gain_dbfs` (0-31)
+- Speex DSP существовал в HA, но никогда не работал для ESPHome — параметры не пробрасывались
+- Теперь 9 настраиваемых параметров с RestoreEntity-персистентностью
+- Сервисы: `assist_satellite.set_noise_suppression`, `assist_satellite.set_auto_gain`
+
+### 10. Документация
 - `SILERO_VAD.md` — полная документация: архитектура, параметры, сервисы, troubleshooting
 - `README.dev.md` — обзор проекта, структура файлов
 - `SESSION.md` — история сессии
@@ -75,6 +82,8 @@
 | `vad_timeout_seconds` | **30.0** | Максимальная длина записи |
 | `vad_mode` | **per_pipeline** | Режим VAD (singleton / per_pipeline) |
 | `before_command_timeout_seconds` | **4.0** | Таймаут до начала команды (прерывание если нет речи) |
+| `noise_suppression_level` | **0** | Шумоподавление Speex DSP (0=выкл, 1-4) |
+| `auto_gain_dbfs` | **0** | Автоусиление сигнала в дБFS (0=выкл, 1-31) |
 
 ---
 
@@ -86,9 +95,10 @@
 - [x] Интеграция Silero VAD (torch JIT)
 - [x] Буферизация 10ms → 32ms
 - [x] Исправление обрыва на паузах
-- [x] Настраиваемые параметры VAD (7 сервисов)
+- [x] Настраиваемые параметры VAD (9 сервисов)
 - [x] Описания сервисов на русском
 - [x] Таймаут до начала команды (before_command_timeout_seconds)
+- [x] Шумоподавление и автоусиление (noise_suppression_level, auto_gain_dbfs)
 - [x] Документация (SILERO_VAD.md, README.dev.md, SESSION.md)
 - [ ] Очистить отладочное WARNING-логирование
 - [ ] Убрать debug WAV-сохранение из esphome/assist_satellite.py
@@ -134,9 +144,9 @@
 | `assist_pipeline/pipeline.py` | Изменён | AudioSettings (7 параметров), _create_silero_vad(), отладочное логирование |
 | `assist_pipeline/__init__.py` | Изменён | Загрузка singleton Silero при старте HA |
 | `assist_pipeline/vad.py` | Изменён | Отладочное логирование VoiceCommandSegmenter |
-| `assist_satellite/entity.py` | Изменён | 7 атрибутов + RestoreEntity + 7 service handlers |
-| `assist_satellite/__init__.py` | Изменён | Регистрация 7 сервисов |
-| `assist_satellite/services.yaml` | Изменён | 7 сервисов с русскими описаниями и ползунками |
+| `assist_satellite/entity.py` | Изменён | 9 атрибутов + RestoreEntity + 9 service handlers |
+| `assist_satellite/__init__.py` | Изменён | Регистрация 9 сервисов |
+| `assist_satellite/services.yaml` | Изменён | 9 сервисов с русскими описаниями и ползунками |
 | `esphome/assist_satellite.py` | Изменён | Debug WAV-сохранение |
 | `Dockerfile.my_dev` | Изменён | silero-vad, torch, патч aiodns |
 | `SILERO_VAD.md` | Новый | Полная документация |

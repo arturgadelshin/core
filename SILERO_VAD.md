@@ -73,6 +73,8 @@ STT (GigaAM через wyoming-onnxasr)
 | `vad_timeout_seconds` | **30.0** | 1.0 — 60.0 |
 | `vad_mode` | **per_pipeline** | singleton / per_pipeline |
 | `before_command_timeout_seconds` | **4.0** | 1.0 — 30.0 |
+| `noise_suppression_level` | **0** | 0 — 4 |
+| `auto_gain_dbfs` | **0** | 0 — 31 |
 
 ### Подробное описание параметров
 
@@ -263,6 +265,65 @@ target:
 
 ---
 
+#### 8. `noise_suppression_level` — шумоподавление
+
+Уровень шумоподавления Speex DSP. Убирает фоновый шум из аудио перед отправкой
+на распознавание речи и VAD. Обрабатывает каждый 10ms чанк.
+
+- **0** (default) — выключено
+- **1** — минимальное, убирает лёгкий шум
+- **2** — среднее, подходит для большинства случаев
+- **3** — высокое, для шумных помещений
+- **4** — максимальное, может подавлять тихую речь
+
+**Когда менять:**
+- Включить (1-2) если фоновый шум мешает распознаванию
+- Уменьшить если тихая речь обрезается
+
+**Как изменить:**
+
+Вариант 1 — через сервис в UI: **Developer Tools → Services → `assist_satellite.set_noise_suppression`** → выберите target entity → установите значение ползунком
+
+Вариант 2 — через YAML:
+```yaml
+service: assist_satellite.set_noise_suppression
+data:
+  value: 2
+target:
+  entity_id: assist_satellite.gg_voice_tdm_none
+```
+
+---
+
+#### 9. `auto_gain_dbfs` — автоматическое усиление
+
+Автоматическое усиление сигнала в дБFS. Полезно если микрофон спутника тихий.
+Speex DSP автоматически поднимает уровень громкости до целевого значения.
+
+- **0** (default) — выключено
+- **10-15** — умеренное усиление для тихих микрофонов
+- **20-25** — сильное усиление
+- **26-31** — максимальное, возможны искажения
+
+**Когда менять:**
+- Увеличить если STT плохо распознаёт тихую речь
+- Уменьшить если появляются искажения или артефакты
+
+**Как изменить:**
+
+Вариант 1 — через сервис в UI: **Developer Tools → Services → `assist_satellite.set_auto_gain`** → выберите target entity → установите значение ползунком
+
+Вариант 2 — через YAML:
+```yaml
+service: assist_satellite.set_auto_gain
+data:
+  value: 15
+target:
+  entity_id: assist_satellite.gg_voice_tdm_none
+```
+
+---
+
 ## Просмотр текущих значений
 
 **Developer Tools → States** → найти сущность спутника (например `assist_satellite.gg_voice_tdm_none`) → атрибуты в карточке.
@@ -276,6 +337,8 @@ command_seconds: {{ state_attr('assist_satellite.gg_voice_tdm_none', 'command_se
 vad_timeout_seconds: {{ state_attr('assist_satellite.gg_voice_tdm_none', 'vad_timeout_seconds') }}
 vad_mode: {{ state_attr('assist_satellite.gg_voice_tdm_none', 'vad_mode') }}
 before_command_timeout_seconds: {{ state_attr('assist_satellite.gg_voice_tdm_none', 'before_command_timeout_seconds') }}
+noise_suppression_level: {{ state_attr('assist_satellite.gg_voice_tdm_none', 'noise_suppression_level') }}
+auto_gain_dbfs: {{ state_attr('assist_satellite.gg_voice_tdm_none', 'auto_gain_dbfs') }}
 ```
 
 ---
@@ -359,6 +422,8 @@ command_seconds: 2.0
 vad_timeout_seconds: 30
 vad_mode: per_pipeline
 before_command_timeout_seconds: 4.0
+noise_suppression_level: 0
+auto_gain_dbfs: 0
 ```
 
 ### Шумное помещение
@@ -370,6 +435,8 @@ command_seconds: 1.0
 vad_timeout_seconds: 15
 vad_mode: per_pipeline
 before_command_timeout_seconds: 3.0
+noise_suppression_level: 2
+auto_gain_dbfs: 0
 ```
 
 ### Длинные диктовки
@@ -381,6 +448,21 @@ command_seconds: 3.0
 vad_timeout_seconds: 60
 vad_mode: per_pipeline
 before_command_timeout_seconds: 6.0
+noise_suppression_level: 0
+auto_gain_dbfs: 0
+```
+
+### Тихий микрофон
+```yaml
+speech_threshold: 0.4
+before_command_speech_threshold: 0.2
+silence_seconds: 2.0
+command_seconds: 2.0
+vad_timeout_seconds: 30
+vad_mode: per_pipeline
+before_command_timeout_seconds: 4.0
+noise_suppression_level: 1
+auto_gain_dbfs: 15
 ```
 
 ---
@@ -472,8 +554,8 @@ homeassistant/components/
 │   └── silero_vad.onnx          # ONNX модель (НЕ ИСПОЛЬЗУЕТСЯ — сломана)
 │
 ├── assist_satellite/
-│   ├── __init__.py              # Регистрация 7 сервисов VAD
-│   ├── entity.py                # AssistSatelliteEntity с 7 атрибутами + RestoreEntity
+│   ├── __init__.py              # Регистрация 9 сервисов VAD
+│   ├── entity.py                # AssistSatelliteEntity с 9 атрибутами + RestoreEntity
 │   └── services.yaml            # Определения сервисов (русские описания, ползунки)
 │
 └── esphome/

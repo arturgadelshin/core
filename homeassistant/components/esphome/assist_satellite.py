@@ -31,6 +31,7 @@ from voluptuous.humanize import humanize_error
 
 from homeassistant.components import assist_satellite, tts
 from homeassistant.components.assist_pipeline import (
+    AudioSettings,
     PipelineEvent,
     PipelineEventType,
     PipelineStage,
@@ -148,6 +149,7 @@ class EsphomeAssistSatellite(
         )
 
         self._active_pipeline_index = 0
+        self._esphome_audio_settings: VoiceAssistantAudioSettings | None = None
 
     def _get_entity_id(self, suffix: str) -> str | None:
         """Return the entity id for pipeline select, etc."""
@@ -175,6 +177,37 @@ class EsphomeAssistSatellite(
         """Return the entity ID of a wake word by index."""
         id_suffix = "" if index < 1 else f"_{index + 1}"
         return self._get_entity_id(f"wake_word{id_suffix}")
+
+    @callback
+    def _resolve_audio_settings(self) -> AudioSettings:
+        """Resolve audio settings with ESPHome firmware values as base."""
+        settings = super()._resolve_audio_settings()
+
+        esphome = self._esphome_audio_settings
+        if esphome is None:
+            return settings
+
+        return AudioSettings(
+            noise_suppression_level=(
+                settings.noise_suppression_level
+                if settings.noise_suppression_level != 0
+                else esphome.noise_suppression_level
+            ),
+            auto_gain_dbfs=(
+                settings.auto_gain_dbfs
+                if settings.auto_gain_dbfs != 0
+                else esphome.auto_gain
+            ),
+            volume_multiplier=esphome.volume_multiplier,
+            is_vad_enabled=settings.is_vad_enabled,
+            silence_seconds=settings.silence_seconds,
+            command_seconds=settings.command_seconds,
+            before_command_speech_threshold=settings.before_command_speech_threshold,
+            speech_threshold=settings.speech_threshold,
+            vad_timeout_seconds=settings.vad_timeout_seconds,
+            before_command_timeout_seconds=settings.before_command_timeout_seconds,
+            vad_mode=settings.vad_mode,
+        )
 
     @property
     def vad_sensitivity_entity_id(self) -> str | None:
@@ -477,6 +510,8 @@ class EsphomeAssistSatellite(
         wake_word_phrase: str | None,
     ) -> int | None:
         """Handle pipeline run request."""
+        self._esphome_audio_settings = audio_settings
+
         # Clear audio queue
         while not self._audio_queue.empty():
             await self._audio_queue.get()

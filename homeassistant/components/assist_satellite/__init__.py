@@ -65,6 +65,9 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
     )
     await component.async_setup(config)
 
+    from .vad_settings_db import async_get_store
+    await async_get_store(hass)
+
     component.async_register_entity_service(
         "announce",
         vol.All(
@@ -154,6 +157,22 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
             {vol.Required("value"): vol.All(vol.Coerce(float), vol.Range(min=1.0, max=30.0))}
         ),
         "async_set_before_command_timeout",
+    )
+
+    component.async_register_entity_service(
+        "set_noise_suppression",
+        cv.make_entity_service_schema(
+            {vol.Required("value"): vol.All(vol.Coerce(int), vol.Range(min=0, max=4))}
+        ),
+        "async_set_noise_suppression",
+    )
+
+    component.async_register_entity_service(
+        "set_auto_gain",
+        cv.make_entity_service_schema(
+            {vol.Required("value"): vol.All(vol.Coerce(int), vol.Range(min=0, max=31))}
+        ),
+        "async_set_auto_gain",
     )
 
     async def handle_ask_question(call: ServiceCall) -> dict[str, Any]:

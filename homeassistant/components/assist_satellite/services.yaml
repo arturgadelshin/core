@@ -269,3 +269,45 @@ set_before_command_timeout:
           step: 0.5
           mode: slider
           unit_of_measurement: s
+set_noise_suppression:
+  name: Шумоподавление
+  description: >-
+    Уровень шумоподавления Speex DSP. Убирает фоновый шум из аудио перед
+    отправкой на распознавание речи и VAD.
+    0 — выключено (по умолчанию). 1 — минимальное. 2 — среднее. 3 — высокое.
+    4 — максимальное. Высокие уровни могут подавлять тихую речь.
+    Рекомендуется начать с 1 или 2 для шумных помещений.
+  target:
+    entity:
+      domain: assist_satellite
+  fields:
+    value:
+      name: Уровень шумодава
+      required: true
+      selector:
+        number:
+          min: 0
+          max: 4
+          step: 1
+          mode: slider
+set_auto_gain:
+  name: Автоматическое усиление
+  description: >-
+    Автоматическое усиление сигнала в дБFS (децибелы относительно полной шкалы).
+    Полезно если микрофон спутника тихий и речь плохо распознаётся.
+    0 — выключено (по умолчанию). Рекомендуемые значения: 10-20 дБ.
+    Слишком высокие значения (25-31) могут привести к искажениям.
+  target:
+    entity:
+      domain: assist_satellite
+  fields:
+    value:
+      name: Усиление (дБFS)
+      required: true
+      selector:
+        number:
+          min: 0
+          max: 31
+          step: 1
+          mode: slider
+          unit_of_measurement: dB
