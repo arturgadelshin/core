@@ -311,3 +311,26 @@ set_auto_gain:
           step: 1
           mode: slider
           unit_of_measurement: dB
+set_recognition_mode:
+  name: Режим распознавания
+  description: >-
+    Режим распознавания речи.
+    vad — классический режим: VAD определяет конец речи по тишине,
+    затем весь аудиофайл отправляется на распознавание. Надёжный, но
+    требует дождаться тишины (задержка = silence_seconds после конца речи).
+    streaming — потоковый режим: STT сервер распознаёт речь в реальном
+    времени, отправляя частичные результаты каждые 1 секунду. Позволяет
+    быстрее получить результат. Требует поддержки со стороны STT сервера
+    (GigaAM RNN-T с streaming). По умолчанию: vad.
+  target:
+    entity:
+      domain: assist_satellite
+  fields:
+    value:
+      name: Режим распознавания
+      required: true
+      selector:
+        select:
+          options:
+            - vad
+            - streaming

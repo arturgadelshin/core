@@ -13,6 +13,7 @@ from pathlib import Path
 from queue import Empty, Queue
 from threading import Thread
 import time
+import threading
 from typing import TYPE_CHECKING, Any, cast
 import wave
 
@@ -89,6 +90,7 @@ from .silero_vad_manager import (
     SileroVadStream,
 )
 from .vad import AudioBuffer, VoiceActivityTimeout, VoiceCommandSegmenter, chunk_samples
+from .recognition_log import RecognitionLogger
 
 if TYPE_CHECKING:
     from hassil.recognize import RecognizeResult
@@ -399,6 +401,7 @@ class PipelineEventType(StrEnum):
     STT_START = "stt-start"
     STT_VAD_START = "stt-vad-start"
     STT_VAD_END = "stt-vad-end"
+    STT_PARTIAL = "stt-partial"
     STT_END = "stt-end"
     INTENT_START = "intent-start"
     INTENT_PROGRESS = "intent-progress"
@@ -565,6 +568,9 @@ class AudioSettings:
     vad_mode: str = "per_pipeline"
     """VAD session mode: 'singleton' (shared) or 'per_pipeline' (isolated)."""
 
+    recognition_mode: str = "vad"
+    """Recognition mode: 'vad' (wait for silence) or 'streaming' (partial results + early stop)."""
+
     def __post_init__(self) -> None:
         """Verify settings post-initialization."""
         if (self.noise_suppression_level < 0) or (self.noise_suppression_level > 4):
@@ -594,13 +600,13 @@ def _create_silero_vad(
 ) -> SileroVadStream | SileroVadPerPipeline | None:
     """Create a Silero VAD instance based on audio settings."""
     if not audio_settings.is_vad_enabled:
-        _LOGGER.warning("Silero VAD: disabled (is_vad_enabled=False)")
+        _LOGGER.debug("Silero VAD: disabled (is_vad_enabled=False)")
         return None
     if audio_settings.vad_mode == "per_pipeline":
         _LOGGER.debug("Silero VAD: creating per_pipeline instance")
         return SileroVadPerPipeline()
     if DATA_SILERO_VAD not in hass.data:
-        _LOGGER.warning("Silero VAD: singleton not found in hass.data, key=%s", DATA_SILERO_VAD)
+        _LOGGER.debug("Silero VAD: singleton not found in hass.data, key=%s", DATA_SILERO_VAD)
         return None
     manager: SileroVadSingleton = hass.data[DATA_SILERO_VAD]
     _LOGGER.debug("Silero VAD: creating stream from singleton")
@@ -664,9 +670,21 @@ class PipelineRun:
     _streamed_response_text = False
     """If the conversation agent streamed response text to TTS result."""
 
+    _streaming_stop: asyncio.Event = field(init=False, default=None)
+    """Event to signal early stop during streaming STT."""
+
+    _streaming_full_text: str = field(init=False, default="")
+    """Accumulated full text from streaming partial results."""
+
+    _streaming_matched_text: str | None = field(init=False, default=None)
+    """Matched trigger text from streaming, used as final result when early stop."""
+
     def __post_init__(self) -> None:
         """Set language for pipeline."""
         self.language = self.pipeline.language or self.hass.config.language
+        self._streaming_stop = asyncio.Event()
+        self._streaming_full_text = ""
+        self._streaming_matched_text = None
 
         # wake -> stt -> intent -> tts
         if PIPELINE_STAGE_ORDER.index(self.end_stage) < PIPELINE_STAGE_ORDER.index(
@@ -1018,7 +1036,6 @@ class PipelineRun:
         stream: AsyncIterable[EnhancedAudioChunk],
     ) -> str:
         """Run speech-to-text portion of pipeline. Returns the spoken text."""
-        # Create a background task to prepare the conversation agent
         if self.end_stage >= PipelineStage.INTENT and self.intent_agent:
             self.hass.async_create_background_task(
                 conversation.async_prepare_agent(
@@ -1043,11 +1060,16 @@ class PipelineRun:
         )
 
         if self.debug_recording_queue is not None:
-            # New recording
             self.debug_recording_queue.put_nowait(f"01_stt-{engine}")
 
+        is_streaming = self.audio_settings.recognition_mode == "streaming"
+        _LOGGER.debug("speech_to_text: recognition_mode='%s', is_streaming=%s, has_configure=%s",
+                        self.audio_settings.recognition_mode, is_streaming,
+                        hasattr(self.stt_provider, "configure_streaming"))
+
+        _stt_start = time.monotonic()
+
         try:
-            # Transcribe audio stream
             stt_vad: VoiceCommandSegmenter | None = None
             if self.audio_settings.is_vad_enabled:
                 stt_vad = VoiceCommandSegmenter(
@@ -1059,12 +1081,22 @@ class PipelineRun:
                     before_command_timeout_seconds=self.audio_settings.before_command_timeout_seconds,
                 )
 
+            if is_streaming:
+                self._streaming_stop.clear()
+                self._streaming_full_text = ""
+                self._streaming_matched_text = None
+                if hasattr(self.stt_provider, "configure_streaming"):
+                    self.stt_provider.configure_streaming(
+                        stop_event=self._streaming_stop,
+                        partial_callback=self._on_stt_partial,
+                    )
+
             result = await self.stt_provider.async_process_audio_stream(
                 metadata,
                 self._speech_to_text_stream(audio_stream=stream, stt_vad=stt_vad),
             )
         except (asyncio.CancelledError, TimeoutError):
-            raise  # expected
+            raise
         except hass_nabucasa.auth.Unauthenticated as src_error:
             raise SpeechToTextError(
                 code="cloud-auth-failed",
@@ -1076,8 +1108,16 @@ class PipelineRun:
                 code="stt-stream-failed",
                 message="Unexpected error during speech-to-text",
             ) from src_error
+        finally:
+            if hasattr(self.stt_provider, "configure_streaming"):
+                self.stt_provider.configure_streaming(None, None)
 
         _LOGGER.debug("speech-to-text result %s", result)
+
+        stt_text = result.text
+        if self._streaming_matched_text is not None:
+            stt_text = self._streaming_matched_text
+            _LOGGER.info("Using streaming matched text instead of final: '%s'", stt_text)
 
         if result.result != stt.SpeechResultState.SUCCESS:
             raise SpeechToTextError(
@@ -1085,7 +1125,7 @@ class PipelineRun:
                 message="speech-to-text failed",
             )
 
-        if not result.text:
+        if not stt_text:
             raise SpeechToTextError(
                 code="stt-no-text-recognized", message=""
             )
@@ -1095,14 +1135,71 @@ class PipelineRun:
                 PipelineEventType.STT_END,
                 {
                     "stt_output": {
-                        "text": result.text,
+                        "text": stt_text,
                         "audio_path": str(self.debug_recording_dir / f"01_stt-{engine}.wav") if self.debug_recording_dir else None,
                     }
                 },
             )
         )
 
-        return result.text
+        _stt_duration = time.monotonic() - _stt_start
+        threading.Thread(
+            target=RecognitionLogger.log,
+            args=(self._satellite_id, self.audio_settings.recognition_mode,
+                  stt_text, self._streaming_matched_text is not None, _stt_duration),
+            daemon=True,
+        ).start()
+
+        return stt_text
+
+    def _on_stt_partial(self, partial_text: str) -> bool:
+        """Callback for streaming STT partial results. partial_text is FULL accumulated text."""
+        self._streaming_full_text = partial_text.strip()
+
+        self.process_event(
+            PipelineEvent(
+                PipelineEventType.STT_PARTIAL,
+                {"text": self._streaming_full_text},
+            )
+        )
+        _LOGGER.debug("STT partial: full='%s'", self._streaming_full_text)
+
+        if self._check_streaming_trigger(self._streaming_full_text):
+            self._streaming_matched_text = self._streaming_full_text
+            _LOGGER.debug("STT streaming: TRIGGER MATCHED, stopping: '%s'", self._streaming_full_text)
+            return True
+
+        return False
+
+    def _check_streaming_trigger(self, text: str) -> bool:
+        """Check if text matches any conversation trigger for early stop."""
+        try:
+            from homeassistant.components.conversation import async_get_agent
+            from homeassistant.components.conversation.models import ConversationInput
+            from homeassistant.core import Context
+            agent_id = self.pipeline.conversation_engine or conversation.HOME_ASSISTANT_AGENT
+            agent = async_get_agent(self.hass, agent_id)
+            if agent is None:
+                _LOGGER.debug("STT trigger check: agent not found (id=%s)", agent_id)
+                return False
+            if not hasattr(agent, '_keyword_match_triggers'):
+                _LOGGER.debug("STT trigger check: agent type=%s has no _keyword_match_triggers", type(agent).__name__)
+                return False
+            user_input = ConversationInput(
+                text=text,
+                context=Context(),
+                conversation_id=None,
+                device_id=self._device_id,
+                satellite_id=self._satellite_id,
+                language=self.language,
+                agent_id=agent_id,
+            )
+            result = agent._keyword_match_triggers(user_input)
+            _LOGGER.debug("STT trigger check: text='%s' matched=%s", text[:80], result is not None)
+            return result is not None
+        except Exception as ex:
+            _LOGGER.debug("STT trigger check error: %s", ex)
+        return False
 
     async def _speech_to_text_stream(
         self,
@@ -1111,12 +1208,16 @@ class PipelineRun:
         sample_rate: int = SAMPLE_RATE,
         sample_width: int = SAMPLE_WIDTH,
     ) -> AsyncGenerator[bytes]:
-        """Yield audio chunks until VAD detects silence or speech-to-text completes."""
+        """Yield audio chunks until VAD detects silence, streaming stop, or speech-to-text completes."""
         sent_vad_start = False
         _chunk_count = 0
         async for chunk in audio_stream:
             self._capture_chunk(chunk.audio)
             _chunk_count += 1
+
+            if self._streaming_stop is not None and self._streaming_stop.is_set():
+                _LOGGER.debug("Streaming: stopping audio stream early")
+                break
 
             if stt_vad is not None:
                 chunk_seconds = (len(chunk.audio) // sample_width) / sample_rate

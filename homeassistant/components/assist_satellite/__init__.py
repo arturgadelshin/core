@@ -175,6 +175,14 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
         "async_set_auto_gain",
     )
 
+    component.async_register_entity_service(
+        "set_recognition_mode",
+        cv.make_entity_service_schema(
+            {vol.Required("value"): vol.In(["vad", "streaming"])}
+        ),
+        "async_set_recognition_mode",
+    )
+
     async def handle_ask_question(call: ServiceCall) -> dict[str, Any]:
         """Handle a Show View service call."""
         satellite_entity_id: str = call.data[ATTR_ENTITY_ID]

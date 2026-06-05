@@ -28,6 +28,7 @@ HARDCODED_DEFAULTS = {
     "before_command_timeout_seconds": 5.0,
     "noise_suppression_level": 0,
     "auto_gain_dbfs": 0,
+    "recognition_mode": "vad",
 }
 
 PARAM_NAMES = set(HARDCODED_DEFAULTS.keys())

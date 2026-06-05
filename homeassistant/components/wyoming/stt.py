@@ -1,9 +1,10 @@
 """Support for Wyoming speech-to-text services."""
 
 from collections.abc import AsyncIterable
+import asyncio
 import logging
 
-from wyoming.asr import Transcribe, Transcript
+from wyoming.asr import Transcribe, Transcript, TranscriptChunk
 from wyoming.audio import AudioChunk, AudioStart, AudioStop
 from wyoming.client import AsyncTcpClient
 
@@ -54,6 +55,16 @@ class WyomingSttProvider(stt.SpeechToTextEntity):
         self._supported_languages = list(model_languages)
         self._attr_name = asr_service.name
         self._attr_unique_id = f"{config_entry.entry_id}-stt"
+        self._streaming_stop: asyncio.Event | None = None
+        self._streaming_partial_callback = None
+
+    def configure_streaming(
+        self,
+        stop_event: asyncio.Event | None = None,
+        partial_callback=None,
+    ) -> None:
+        self._streaming_stop = stop_event
+        self._streaming_partial_callback = partial_callback
 
     @property
     def supported_languages(self) -> list[str]:
@@ -89,12 +100,14 @@ class WyomingSttProvider(stt.SpeechToTextEntity):
         self, metadata: stt.SpeechMetadata, stream: AsyncIterable[bytes]
     ) -> stt.SpeechResult:
         """Process an audio stream to STT service."""
+        is_streaming = self._streaming_stop is not None or self._streaming_partial_callback is not None
+        _LOGGER.debug("STT process_audio_stream: streaming=%s (stop=%s, callback=%s)",
+                     is_streaming, self._streaming_stop is not None, self._streaming_partial_callback is not None)
+
         try:
             async with AsyncTcpClient(self.service.host, self.service.port) as client:
-                # Set transcription language
                 await client.write_event(Transcribe(language=metadata.language).event())
 
-                # Begin audio stream
                 await client.write_event(
                     AudioStart(
                         rate=SAMPLE_RATE,
@@ -103,34 +116,153 @@ class WyomingSttProvider(stt.SpeechToTextEntity):
                     ).event(),
                 )
 
-                async for audio_bytes in stream:
-                    chunk = AudioChunk(
-                        rate=SAMPLE_RATE,
-                        width=SAMPLE_WIDTH,
-                        channels=SAMPLE_CHANNELS,
-                        audio=audio_bytes,
-                    )
-                    await client.write_event(chunk.event())
-
-                # End audio stream
-                await client.write_event(AudioStop().event())
-
-                while True:
-                    event = await client.read_event()
-                    if event is None:
-                        _LOGGER.debug("Connection lost")
-                        return stt.SpeechResult(None, stt.SpeechResultState.ERROR)
-
-                    if Transcript.is_type(event.type):
-                        transcript = Transcript.from_event(event)
-                        text = transcript.text
-                        break
+                if is_streaming:
+                    result = await self._streaming_process(client, stream)
+                else:
+                    result = await self._batch_process(client, stream)
 
         except (OSError, WyomingError):
             _LOGGER.exception("Error processing audio stream")
             return stt.SpeechResult(None, stt.SpeechResultState.ERROR)
+        finally:
+            self._streaming_stop = None
+            self._streaming_partial_callback = None
+
+        return result
+
+    async def _batch_process(
+        self, client: AsyncTcpClient, stream: AsyncIterable[bytes]
+    ) -> stt.SpeechResult:
+        """Batch mode: send all audio, then read result."""
+        _BUFFER_SIZE = 6400
+        buf = bytearray()
+        async for audio_bytes in stream:
+            buf.extend(audio_bytes)
+            if len(buf) >= _BUFFER_SIZE:
+                chunk = AudioChunk(
+                    rate=SAMPLE_RATE,
+                    width=SAMPLE_WIDTH,
+                    channels=SAMPLE_CHANNELS,
+                    audio=bytes(buf),
+                )
+                await client.write_event(chunk.event())
+                buf = bytearray()
+
+        if buf:
+            chunk = AudioChunk(
+                rate=SAMPLE_RATE,
+                width=SAMPLE_WIDTH,
+                channels=SAMPLE_CHANNELS,
+                audio=bytes(buf),
+            )
+            await client.write_event(chunk.event())
+
+        await client.write_event(AudioStop().event())
+
+        text = ""
+        while True:
+            event = await client.read_event()
+            if event is None:
+                _LOGGER.debug("Connection lost")
+                return stt.SpeechResult(None, stt.SpeechResultState.ERROR)
+
+            if Transcript.is_type(event.type):
+                transcript = Transcript.from_event(event)
+                text = transcript.text
+                break
+
+        return stt.SpeechResult(text, stt.SpeechResultState.SUCCESS)
+
+    async def _streaming_process(
+        self, client: AsyncTcpClient, stream: AsyncIterable[bytes]
+    ) -> stt.SpeechResult:
+        """Streaming mode: concurrent send + read with early stop support."""
+        partial_texts: list[str] = []
+        final_text = ""
+        result_event = asyncio.Event()
+        send_error: Exception | None = None
+
+        _BUFFER_SIZE = 6400
+        _FLUSH_INTERVAL = 0.2
+
+        async def _send_audio():
+            nonlocal send_error
+            try:
+                buf = bytearray()
+                last_flush = asyncio.get_event_loop().time()
+                async for audio_bytes in stream:
+                    if self._streaming_stop is not None and self._streaming_stop.is_set():
+                        _LOGGER.debug("Streaming: early stop requested, stopping audio send")
+                        break
+                    buf.extend(audio_bytes)
+                    now = asyncio.get_event_loop().time()
+                    if len(buf) >= _BUFFER_SIZE or (now - last_flush) >= _FLUSH_INTERVAL:
+                        chunk = AudioChunk(
+                            rate=SAMPLE_RATE,
+                            width=SAMPLE_WIDTH,
+                            channels=SAMPLE_CHANNELS,
+                            audio=bytes(buf),
+                        )
+                        await client.write_event(chunk.event())
+                        buf = bytearray()
+                        last_flush = now
+
+                if buf:
+                    chunk = AudioChunk(
+                        rate=SAMPLE_RATE,
+                        width=SAMPLE_WIDTH,
+                        channels=SAMPLE_CHANNELS,
+                        audio=bytes(buf),
+                    )
+                    await client.write_event(chunk.event())
+
+                await client.write_event(AudioStop().event())
+            except Exception as err:
+                send_error = err
+
+        async def _read_results():
+            nonlocal final_text
+            while True:
+                event = await client.read_event()
+                if event is None:
+                    break
+
+                if TranscriptChunk.is_type(event.type):
+                    tc = TranscriptChunk.from_event(event)
+                    partial_texts.append(tc.text)
+                    _LOGGER.debug("TranscriptChunk: '%s'", tc.text.strip())
+
+                    if self._streaming_partial_callback is not None:
+                        try:
+                            should_stop = self._streaming_partial_callback(tc.text)
+                            if should_stop and self._streaming_stop is not None:
+                                _LOGGER.info("Streaming: partial callback triggered early stop")
+                                self._streaming_stop.set()
+                        except Exception:
+                            pass
+
+                if Transcript.is_type(event.type):
+                    transcript = Transcript.from_event(event)
+                    final_text = transcript.text
+                    break
+
+            result_event.set()
+
+        send_task = asyncio.ensure_future(_send_audio())
+        read_task = asyncio.ensure_future(_read_results())
+
+        try:
+            await asyncio.gather(send_task, read_task)
+        except Exception:
+            send_task.cancel()
+            read_task.cancel()
+            raise
+
+        if send_error is not None:
+            raise send_error
 
         return stt.SpeechResult(
-            text,
+            final_text,
             stt.SpeechResultState.SUCCESS,
+            partial_texts=partial_texts if partial_texts else None,
         )

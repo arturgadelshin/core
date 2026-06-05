@@ -154,6 +154,7 @@ class AssistSatelliteEntity(RestoreEntity):
     _before_command_timeout_seconds: float = 4.0
     _noise_suppression_level: int = 0
     _auto_gain_dbfs: int = 0
+    _recognition_mode: str = "vad"
     __assist_satellite_state = AssistSatelliteState.IDLE
 
     @final
@@ -185,6 +186,7 @@ class AssistSatelliteEntity(RestoreEntity):
             "before_command_timeout_seconds": self._before_command_timeout_seconds,
             "noise_suppression_level": self._noise_suppression_level,
             "auto_gain_dbfs": self._auto_gain_dbfs,
+            "recognition_mode": self._recognition_mode,
         }
 
     async def async_added_to_hass(self) -> None:
@@ -219,6 +221,8 @@ class AssistSatelliteEntity(RestoreEntity):
                 settings.get("noise_suppression_level", defaults["noise_suppression_level"])
             )
             self._auto_gain_dbfs = int(settings.get("auto_gain_dbfs", defaults["auto_gain_dbfs"]))
+            self._recognition_mode = str(settings.get("recognition_mode", defaults.get("recognition_mode", "vad")))
+            _LOGGER.debug("Loaded settings from DB for %s: recognition_mode=%s, vad_mode=%s", self.entity_id, self._recognition_mode, self._vad_mode)
         else:
             self._speech_threshold = float(defaults["speech_threshold"])
             self._vad_timeout_seconds = float(defaults["vad_timeout_seconds"])
@@ -229,6 +233,7 @@ class AssistSatelliteEntity(RestoreEntity):
             self._before_command_timeout_seconds = float(defaults["before_command_timeout_seconds"])
             self._noise_suppression_level = int(defaults["noise_suppression_level"])
             self._auto_gain_dbfs = int(defaults["auto_gain_dbfs"])
+            self._recognition_mode = str(defaults.get("recognition_mode", "vad"))
 
     @property
     def tts_options(self) -> dict[str, Any] | None:
@@ -722,7 +727,9 @@ class AssistSatelliteEntity(RestoreEntity):
 
     @callback
     def _resolve_audio_settings(self) -> AudioSettings:
-        """Resolve all audio settings from satellite entities."""
+        mode = self._recognition_mode
+        if self._ask_question_future is not None:
+            mode = "vad"
         return AudioSettings(
             silence_seconds=self._silence_seconds,
             command_seconds=self._command_seconds,
@@ -733,6 +740,7 @@ class AssistSatelliteEntity(RestoreEntity):
             before_command_timeout_seconds=self._before_command_timeout_seconds,
             noise_suppression_level=self._noise_suppression_level,
             auto_gain_dbfs=self._auto_gain_dbfs,
+            recognition_mode=mode,
         )
 
     async def _save_param(self, param: str, value: Any) -> None:
@@ -801,6 +809,13 @@ class AssistSatelliteEntity(RestoreEntity):
         self._auto_gain_dbfs = int(max(0, min(31, value)))
         await self._save_param("auto_gain_dbfs", self._auto_gain_dbfs)
         self.async_write_ha_state()
+
+    async def async_set_recognition_mode(self, value: str) -> None:
+        """Set recognition mode: 'vad' or 'streaming'."""
+        if value in ("vad", "streaming"):
+            self._recognition_mode = value
+            await self._save_param("recognition_mode", self._recognition_mode)
+            self.async_write_ha_state()
 
     async def _resolve_announcement_media_id(
         self,

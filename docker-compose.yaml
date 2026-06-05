@@ -24,11 +24,12 @@ services:
     ports:
       - "10301:10301"
     command: >
-      --model gigaam-v3-rnnt --uri tcp://0.0.0.0:10301 --device cpu --quantization int8 --quantization int8
+      --model gigaam-v3-rnnt --uri tcp://0.0.0.0:10301 --device cpu --quantization int8 --partial-interval-ms 5000
     environment:
       - TZ=Europe/Moscow
     volumes:
       - ./model-cache:/root/.cache
+      - ./wyoming-onnxasr/server.py:/app/server.py
     restart: unless-stopped
 
   piper:

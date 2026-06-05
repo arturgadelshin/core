@@ -36,3 +36,4 @@ class SpeechResult:
 
     text: str | None
     result: SpeechResultState
+    partial_texts: list[str] | None = None
