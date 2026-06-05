@@ -155,6 +155,7 @@ class AssistSatelliteEntity(RestoreEntity):
     _noise_suppression_level: int = 0
     _auto_gain_dbfs: int = 0
     _recognition_mode: str = "vad"
+    _volume_multiplier: float = 1.0
     __assist_satellite_state = AssistSatelliteState.IDLE
 
     @final
@@ -187,6 +188,7 @@ class AssistSatelliteEntity(RestoreEntity):
             "noise_suppression_level": self._noise_suppression_level,
             "auto_gain_dbfs": self._auto_gain_dbfs,
             "recognition_mode": self._recognition_mode,
+            "volume_multiplier": self._volume_multiplier,
         }
 
     async def async_added_to_hass(self) -> None:
@@ -222,6 +224,7 @@ class AssistSatelliteEntity(RestoreEntity):
             )
             self._auto_gain_dbfs = int(settings.get("auto_gain_dbfs", defaults["auto_gain_dbfs"]))
             self._recognition_mode = str(settings.get("recognition_mode", defaults.get("recognition_mode", "vad")))
+            self._volume_multiplier = float(settings.get("volume_multiplier", defaults.get("volume_multiplier", 1.0)))
             _LOGGER.debug("Loaded settings from DB for %s: recognition_mode=%s, vad_mode=%s", self.entity_id, self._recognition_mode, self._vad_mode)
         else:
             self._speech_threshold = float(defaults["speech_threshold"])
@@ -234,6 +237,7 @@ class AssistSatelliteEntity(RestoreEntity):
             self._noise_suppression_level = int(defaults["noise_suppression_level"])
             self._auto_gain_dbfs = int(defaults["auto_gain_dbfs"])
             self._recognition_mode = str(defaults.get("recognition_mode", "vad"))
+            self._volume_multiplier = float(defaults.get("volume_multiplier", 1.0))
 
     @property
     def tts_options(self) -> dict[str, Any] | None:
@@ -740,6 +744,7 @@ class AssistSatelliteEntity(RestoreEntity):
             before_command_timeout_seconds=self._before_command_timeout_seconds,
             noise_suppression_level=self._noise_suppression_level,
             auto_gain_dbfs=self._auto_gain_dbfs,
+            volume_multiplier=self._volume_multiplier,
             recognition_mode=mode,
         )
 
@@ -816,6 +821,12 @@ class AssistSatelliteEntity(RestoreEntity):
             self._recognition_mode = value
             await self._save_param("recognition_mode", self._recognition_mode)
             self.async_write_ha_state()
+
+    async def async_set_volume_multiplier(self, value: float) -> None:
+        """Set volume multiplier for microphone audio."""
+        self._volume_multiplier = float(max(0.1, min(30.0, value)))
+        await self._save_param("volume_multiplier", self._volume_multiplier)
+        self.async_write_ha_state()
 
     async def _resolve_announcement_media_id(
         self,

@@ -33,3 +33,6 @@ assist_pipeline:
 
   # Recognition mode: 'vad' (wait for silence) or 'streaming' (partial results + early stop)
   recognition_mode: vad
+
+  # Microphone volume multiplier: 1.0 = no change, 2.0 = twice as loud
+  volume_multiplier: 1.0

@@ -198,7 +198,11 @@ class EsphomeAssistSatellite(
                 if settings.auto_gain_dbfs != 0
                 else esphome.auto_gain
             ),
-            volume_multiplier=esphome.volume_multiplier,
+            volume_multiplier=(
+                settings.volume_multiplier
+                if settings.volume_multiplier != 1.0
+                else esphome.volume_multiplier
+            ),
             is_vad_enabled=settings.is_vad_enabled,
             silence_seconds=settings.silence_seconds,
             command_seconds=settings.command_seconds,
