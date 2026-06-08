@@ -36,6 +36,12 @@
       },
       "volume_multiplier": {
         "name": "Mic volume"
+      },
+      "speech_threshold": {
+        "name": "Speech threshold"
+      },
+      "vad_timeout_seconds": {
+        "name": "VAD timeout"
       }
     },
     "select": {

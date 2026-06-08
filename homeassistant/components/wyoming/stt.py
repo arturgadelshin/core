@@ -1,6 +1,7 @@
 """Support for Wyoming speech-to-text services."""
 
 from collections.abc import AsyncIterable
+import asyncio
 import logging
 
 from wyoming.asr import Transcribe, Transcript
@@ -91,10 +92,8 @@ class WyomingSttProvider(stt.SpeechToTextEntity):
         """Process an audio stream to STT service."""
         try:
             async with AsyncTcpClient(self.service.host, self.service.port) as client:
-                # Set transcription language
                 await client.write_event(Transcribe(language=metadata.language).event())
 
-                # Begin audio stream
                 await client.write_event(
                     AudioStart(
                         rate=SAMPLE_RATE,
@@ -103,34 +102,53 @@ class WyomingSttProvider(stt.SpeechToTextEntity):
                     ).event(),
                 )
 
-                async for audio_bytes in stream:
-                    chunk = AudioChunk(
-                        rate=SAMPLE_RATE,
-                        width=SAMPLE_WIDTH,
-                        channels=SAMPLE_CHANNELS,
-                        audio=audio_bytes,
-                    )
-                    await client.write_event(chunk.event())
-
-                # End audio stream
-                await client.write_event(AudioStop().event())
-
-                while True:
-                    event = await client.read_event()
-                    if event is None:
-                        _LOGGER.debug("Connection lost")
-                        return stt.SpeechResult(None, stt.SpeechResultState.ERROR)
-
-                    if Transcript.is_type(event.type):
-                        transcript = Transcript.from_event(event)
-                        text = transcript.text
-                        break
+                result = await self._batch_process(client, stream)
 
         except (OSError, WyomingError):
             _LOGGER.exception("Error processing audio stream")
             return stt.SpeechResult(None, stt.SpeechResultState.ERROR)
 
-        return stt.SpeechResult(
-            text,
-            stt.SpeechResultState.SUCCESS,
-        )
+        return result
+
+    async def _batch_process(
+        self, client: AsyncTcpClient, stream: AsyncIterable[bytes]
+    ) -> stt.SpeechResult:
+        """Batch mode: send all audio, then read result."""
+        _BUFFER_SIZE = 6400
+        buf = bytearray()
+        async for audio_bytes in stream:
+            buf.extend(audio_bytes)
+            if len(buf) >= _BUFFER_SIZE:
+                chunk = AudioChunk(
+                    rate=SAMPLE_RATE,
+                    width=SAMPLE_WIDTH,
+                    channels=SAMPLE_CHANNELS,
+                    audio=bytes(buf),
+                )
+                await client.write_event(chunk.event())
+                buf = bytearray()
+
+        if buf:
+            chunk = AudioChunk(
+                rate=SAMPLE_RATE,
+                width=SAMPLE_WIDTH,
+                channels=SAMPLE_CHANNELS,
+                audio=bytes(buf),
+            )
+            await client.write_event(chunk.event())
+
+        await client.write_event(AudioStop().event())
+
+        text = ""
+        while True:
+            event = await client.read_event()
+            if event is None:
+                _LOGGER.debug("Connection lost")
+                return stt.SpeechResult(None, stt.SpeechResultState.ERROR)
+
+            if Transcript.is_type(event.type):
+                transcript = Transcript.from_event(event)
+                text = transcript.text
+                break
+
+        return stt.SpeechResult(text, stt.SpeechResultState.SUCCESS)

@@ -16,7 +16,9 @@ from .const import (
     CONF_DEBUG_RECORDING_DIR,
     DATA_CONFIG,
     DATA_LAST_WAKE_UP,
+    DATA_SILERO_VAD,
     DOMAIN,
+    EVENT_DEBUG_RECORDING,
     EVENT_RECORDING,
     OPTION_PREFERRED,
     SAMPLE_CHANNELS,
@@ -47,6 +49,7 @@ from .websocket_api import async_register_websocket_api
 
 __all__ = (
     "DOMAIN",
+    "EVENT_DEBUG_RECORDING",
     "EVENT_RECORDING",
     "OPTION_PREFERRED",
     "SAMPLES_PER_CHUNK",
@@ -89,6 +92,10 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
 
     await async_setup_pipeline_store(hass)
     async_register_websocket_api(hass)
+
+    from .silero_vad_manager import async_create_silero_singleton
+
+    hass.data[DATA_SILERO_VAD] = await async_create_silero_singleton(hass)
 
     return True
 

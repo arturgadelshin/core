@@ -1,0 +1,4 @@
+pycares>=5.0.0
+aiodns==3.5.0
+mutagen
+hassil

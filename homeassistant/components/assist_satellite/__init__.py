@@ -65,6 +65,9 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
     )
     await component.async_setup(config)
 
+    from .vad_settings_db import async_get_store
+    await async_get_store(hass)
+
     component.async_register_entity_service(
         "announce",
         vol.All(
@@ -98,6 +101,94 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
         ),
         "async_internal_start_conversation",
         [AssistSatelliteEntityFeature.START_CONVERSATION],
+    )
+
+    component.async_register_entity_service(
+        "set_speech_threshold",
+        cv.make_entity_service_schema(
+            {vol.Required("value"): vol.All(vol.Coerce(float), vol.Range(min=0.1, max=1.0))}
+        ),
+        "async_set_speech_threshold",
+    )
+
+    component.async_register_entity_service(
+        "set_vad_timeout",
+        cv.make_entity_service_schema(
+            {vol.Required("value"): vol.All(vol.Coerce(float), vol.Range(min=1.0, max=60.0))}
+        ),
+        "async_set_vad_timeout",
+    )
+
+    component.async_register_entity_service(
+        "set_silence_seconds",
+        cv.make_entity_service_schema(
+            {vol.Required("value"): vol.All(vol.Coerce(float), vol.Range(min=0.3, max=10.0))}
+        ),
+        "async_set_silence_seconds",
+    )
+
+    component.async_register_entity_service(
+        "set_command_seconds",
+        cv.make_entity_service_schema(
+            {vol.Required("value"): vol.All(vol.Coerce(float), vol.Range(min=0.3, max=10.0))}
+        ),
+        "async_set_command_seconds",
+    )
+
+    component.async_register_entity_service(
+        "set_before_command_speech_threshold",
+        cv.make_entity_service_schema(
+            {vol.Required("value"): vol.All(vol.Coerce(float), vol.Range(min=0.05, max=0.9))}
+        ),
+        "async_set_before_command_speech_threshold",
+    )
+
+    component.async_register_entity_service(
+        "set_vad_mode",
+        cv.make_entity_service_schema(
+            {vol.Required("value"): vol.In(["singleton", "per_pipeline"])}
+        ),
+        "async_set_vad_mode",
+    )
+
+    component.async_register_entity_service(
+        "set_before_command_timeout",
+        cv.make_entity_service_schema(
+            {vol.Required("value"): vol.All(vol.Coerce(float), vol.Range(min=1.0, max=30.0))}
+        ),
+        "async_set_before_command_timeout",
+    )
+
+    component.async_register_entity_service(
+        "set_noise_suppression",
+        cv.make_entity_service_schema(
+            {vol.Required("value"): vol.All(vol.Coerce(int), vol.Range(min=0, max=4))}
+        ),
+        "async_set_noise_suppression",
+    )
+
+    component.async_register_entity_service(
+        "set_auto_gain",
+        cv.make_entity_service_schema(
+            {vol.Required("value"): vol.All(vol.Coerce(int), vol.Range(min=0, max=31))}
+        ),
+        "async_set_auto_gain",
+    )
+
+    component.async_register_entity_service(
+        "set_volume_multiplier",
+        cv.make_entity_service_schema(
+            {vol.Required("value"): vol.All(vol.Coerce(float), vol.Range(min=0.1, max=30.0))}
+        ),
+        "async_set_volume_multiplier",
+    )
+
+    component.async_register_entity_service(
+        "set_trigger_timeout",
+        cv.make_entity_service_schema(
+            {vol.Required("value"): vol.All(vol.Coerce(float), vol.Range(min=1.0, max=30.0))}
+        ),
+        "async_set_trigger_timeout_seconds",
     )
 
     async def handle_ask_question(call: ServiceCall) -> dict[str, Any]:

@@ -29,7 +29,7 @@ class VadSensitivity(StrEnum):
         if sensitivity == VadSensitivity.AGGRESSIVE:
             return 0.25
 
-        return 0.7
+        return 0.25
 
 
 class AudioBuffer:
@@ -78,14 +78,17 @@ class VoiceCommandSegmenter:
     speech_seconds: float = 0.3
     """Seconds of speech before voice command has started."""
 
-    command_seconds: float = 1.0
+    command_seconds: float = 2.0
     """Minimum number of seconds for a voice command."""
 
-    silence_seconds: float = 0.7
+    silence_seconds: float = 2.0
     """Seconds of silence after voice command has ended."""
 
     timeout_seconds: float = 15.0
     """Maximum number of seconds before stopping with timeout=True."""
+
+    before_command_timeout_seconds: float = 5.0
+    """Maximum seconds of silence before voice command starts. Aborts if no speech detected."""
 
     reset_seconds: float = 1.0
     """Seconds before reset start/stop time counters."""
@@ -114,6 +117,9 @@ class VoiceCommandSegmenter:
     _timeout_seconds_left: float = 0.0
     """Seconds left before considering voice command timed out."""
 
+    _before_command_timeout_left: float = 0.0
+    """Seconds left before aborting (no speech detected after activation)."""
+
     _reset_seconds_left: float = 0.0
     """Seconds left before resetting start/stop time counters."""
 
@@ -127,6 +133,7 @@ class VoiceCommandSegmenter:
         self._command_seconds_left = self.command_seconds - self.speech_seconds
         self._silence_seconds_left = self.silence_seconds
         self._timeout_seconds_left = self.timeout_seconds
+        self._before_command_timeout_left = self.before_command_timeout_seconds
         self._reset_seconds_left = self.reset_seconds
         self.in_command = False
 
@@ -140,9 +147,9 @@ class VoiceCommandSegmenter:
 
         self._timeout_seconds_left -= chunk_seconds
         if self._timeout_seconds_left <= 0:
-            _LOGGER.debug(
-                "VAD end of speech detection timed out after %s seconds",
-                self.timeout_seconds,
+            _LOGGER.warning(
+                "VAD TIMEOUT after %.1fs (limit=%.1fs)",
+                self.timeout_seconds - self._timeout_seconds_left, self.timeout_seconds,
             )
             self.reset()
             self.timed_out = True
@@ -152,7 +159,18 @@ class VoiceCommandSegmenter:
             speech_probability = 0.0
 
         if not self.in_command:
-            # Before command
+            # Before command — abort if no speech detected within timeout
+            self._before_command_timeout_left -= chunk_seconds
+            if self._before_command_timeout_left <= 0:
+                _LOGGER.warning(
+                    "VAD BEFORE_COMMAND_TIMEOUT after %.1fs (limit=%.1fs)",
+                    self.before_command_timeout_seconds - self._before_command_timeout_left,
+                    self.before_command_timeout_seconds,
+                )
+                self.reset()
+                self.timed_out = True
+                return False
+
             is_speech = speech_probability > self.before_command_speech_threshold
             if is_speech:
                 self._reset_seconds_left = self.reset_seconds
@@ -164,7 +182,10 @@ class VoiceCommandSegmenter:
                         self.command_seconds - self.speech_seconds
                     )
                     self._silence_seconds_left = self.silence_seconds
-                    _LOGGER.debug("Voice command started")
+                    _LOGGER.warning(
+                        "VAD COMMAND_START: sil_sec=%.1f cmd_sec=%.1f threshold=%.2f",
+                        self.silence_seconds, self.command_seconds, self.in_command_speech_threshold,
+                    )
             else:
                 # Reset if enough silence
                 self._reset_seconds_left -= chunk_seconds
@@ -183,8 +204,11 @@ class VoiceCommandSegmenter:
                     self._command_seconds_left <= 0
                 ):
                     # Command finished successfully
+                    _LOGGER.warning(
+                        "VAD SILENCE_FINISH: sil_left=%.3f cmd_left=%.3f prob=%.3f",
+                        self._silence_seconds_left, self._command_seconds_left, speech_probability,
+                    )
                     self.reset()
-                    _LOGGER.debug("Voice command finished")
                     return False
             else:
                 # Speech in command.

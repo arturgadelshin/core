@@ -13,6 +13,7 @@ from pathlib import Path
 from queue import Empty, Queue
 from threading import Thread
 import time
+import threading
 from typing import TYPE_CHECKING, Any, cast
 import wave
 
@@ -55,14 +56,16 @@ from homeassistant.util import (
 from homeassistant.util.hass_dict import HassKey
 from homeassistant.util.limited_size_dict import LimitedSizeDict
 
-from .audio_enhancer import AudioEnhancer, EnhancedAudioChunk, MicroVadSpeexEnhancer
+from .audio_enhancer import AudioEnhancer, EnhancedAudioChunk, SileroVadSpeexEnhancer
 from .const import (
     ACKNOWLEDGE_PATH,
     BYTES_PER_CHUNK,
     CONF_DEBUG_RECORDING_DIR,
     DATA_CONFIG,
     DATA_LAST_WAKE_UP,
+    DATA_SILERO_VAD,
     DOMAIN,
+    EVENT_DEBUG_RECORDING,
     MS_PER_CHUNK,
     SAMPLE_CHANNELS,
     SAMPLE_RATE,
@@ -81,7 +84,13 @@ from .error import (
     WakeWordDetectionError,
     WakeWordTimeoutError,
 )
+from .silero_vad_manager import (
+    SileroVadPerPipeline,
+    SileroVadSingleton,
+    SileroVadStream,
+)
 from .vad import AudioBuffer, VoiceActivityTimeout, VoiceCommandSegmenter, chunk_samples
+from .recognition_log import RecognitionLogger
 
 if TYPE_CHECKING:
     from hassil.recognize import RecognizeResult
@@ -392,6 +401,7 @@ class PipelineEventType(StrEnum):
     STT_START = "stt-start"
     STT_VAD_START = "stt-vad-start"
     STT_VAD_END = "stt-vad-end"
+    STT_PARTIAL = "stt-partial"
     STT_END = "stt-end"
     INTENT_START = "intent-start"
     INTENT_PROGRESS = "intent-progress"
@@ -537,8 +547,32 @@ class AudioSettings:
     is_vad_enabled: bool = True
     """True if VAD is used to determine the end of the voice command."""
 
-    silence_seconds: float = 0.7
+    silence_seconds: float = 2.0
     """Seconds of silence after voice command has ended."""
+
+    command_seconds: float = 1.5
+    """Minimum number of seconds for a voice command."""
+
+    before_command_speech_threshold: float = 0.5
+    """Probability threshold for speech before voice command."""
+
+    speech_threshold: float = 0.5
+    """Speech probability threshold for Silero VAD (0.0-1.0)."""
+
+    vad_timeout_seconds: float = 30.0
+    """Maximum seconds before stopping with timeout."""
+
+    before_command_timeout_seconds: float = 5.0
+    """Maximum seconds of silence before voice command starts (abort if no speech)."""
+
+    vad_mode: str = "per_pipeline"
+    """VAD session mode: 'singleton' (shared) or 'per_pipeline' (isolated)."""
+
+    trigger_timeout_seconds: float = 7.0
+    """Maximum seconds after speech start to listen for command before forced recognition."""
+
+    enable_trigger_check: bool = True
+    """If True, check recognized text against conversation triggers. False for ask_question."""
 
     def __post_init__(self) -> None:
         """Verify settings post-initialization."""
@@ -548,6 +582,12 @@ class AudioSettings:
         if (self.auto_gain_dbfs < 0) or (self.auto_gain_dbfs > 31):
             raise ValueError("auto_gain_dbfs must be in [0, 31]")
 
+        if not (0.0 < self.speech_threshold <= 1.0):
+            raise ValueError("speech_threshold must be in (0.0, 1.0]")
+
+        if not (1.0 <= self.vad_timeout_seconds <= 60.0):
+            raise ValueError("vad_timeout_seconds must be in [1.0, 60.0]")
+
     @property
     def needs_processor(self) -> bool:
         """True if an audio processor is needed."""
@@ -556,6 +596,24 @@ class AudioSettings:
             or (self.noise_suppression_level > 0)
             or (self.auto_gain_dbfs > 0)
         )
+
+
+def _create_silero_vad(
+    hass: HomeAssistant, audio_settings: AudioSettings
+) -> SileroVadStream | SileroVadPerPipeline | None:
+    """Create a Silero VAD instance based on audio settings."""
+    if not audio_settings.is_vad_enabled:
+        _LOGGER.debug("Silero VAD: disabled (is_vad_enabled=False)")
+        return None
+    if audio_settings.vad_mode == "per_pipeline":
+        _LOGGER.debug("Silero VAD: creating per_pipeline instance")
+        return SileroVadPerPipeline()
+    if DATA_SILERO_VAD not in hass.data:
+        _LOGGER.debug("Silero VAD: singleton not found in hass.data, key=%s", DATA_SILERO_VAD)
+        return None
+    manager: SileroVadSingleton = hass.data[DATA_SILERO_VAD]
+    _LOGGER.debug("Silero VAD: creating stream from singleton")
+    return manager.create_stream()
 
 
 @dataclass
@@ -589,6 +647,9 @@ class PipelineRun:
     debug_recording_queue: Queue[str | bytes | None] | None = None
     """Queue to communicate with debug recording thread"""
 
+    debug_recording_dir: Path | None = field(init=False, default=None)
+    """Path to directory with debug wav files"""
+
     audio_enhancer: AudioEnhancer | None = None
     """VAD/noise suppression/auto gain"""
 
@@ -612,9 +673,13 @@ class PipelineRun:
     _streamed_response_text = False
     """If the conversation agent streamed response text to TTS result."""
 
+    _trigger_matched_text: str | None = field(init=False, default=None)
+    """Text that matched a trigger keyword, used to skip intent when no match."""
+
     def __post_init__(self) -> None:
         """Set language for pipeline."""
         self.language = self.pipeline.language or self.hass.config.language
+        self._trigger_matched_text = None
 
         # wake -> stt -> intent -> tts
         if PIPELINE_STAGE_ORDER.index(self.end_stage) < PIPELINE_STAGE_ORDER.index(
@@ -632,12 +697,15 @@ class PipelineRun:
 
         # Initialize with audio settings
         if self.audio_settings.needs_processor and (self.audio_enhancer is None):
-            # Default audio enhancer
-            self.audio_enhancer = MicroVadSpeexEnhancer(
+            silero_vad = _create_silero_vad(self.hass, self.audio_settings)
+            self.audio_enhancer = SileroVadSpeexEnhancer(
                 self.audio_settings.auto_gain_dbfs,
                 self.audio_settings.noise_suppression_level,
                 self.audio_settings.is_vad_enabled,
+                silero_vad=silero_vad,
             )
+        else:
+            pass
 
     def __eq__(self, other: object) -> bool:
         """Compare pipeline runs by id."""
@@ -695,6 +763,40 @@ class PipelineRun:
         # Stop the recording thread before emitting run-end.
         # This ensures that files are properly closed if the event handler reads them.
         await self._stop_debug_recording_thread()
+
+        # Fire event with debug recording info
+        if self.debug_recording_dir is not None:
+            try:
+                relative_path = str(
+                    self.debug_recording_dir.relative_to(
+                        self.hass.config.config_dir
+                    )
+                )
+            except ValueError:
+                relative_path = str(self.debug_recording_dir)
+
+            wav_files: list[str] = []
+            if self.debug_recording_dir.exists():
+                wav_files = await self.hass.async_add_executor_job(
+                    lambda: sorted(
+                        f.name
+                        for f in self.debug_recording_dir.iterdir()
+                        if f.suffix == ".wav"
+                    )
+                )
+
+            self.hass.bus.async_fire(
+                EVENT_DEBUG_RECORDING,
+                {
+                    "pipeline_id": self.pipeline.id,
+                    "pipeline_name": self.pipeline.name,
+                    "device_id": self._device_id,
+                    "satellite_id": self._satellite_id,
+                    "run_id": self.id,
+                    "recording_dir": relative_path,
+                    "wav_files": wav_files,
+                },
+            )
 
         self.process_event(
             PipelineEvent(
@@ -929,7 +1031,6 @@ class PipelineRun:
         stream: AsyncIterable[EnhancedAudioChunk],
     ) -> str:
         """Run speech-to-text portion of pipeline. Returns the spoken text."""
-        # Create a background task to prepare the conversation agent
         if self.end_stage >= PipelineStage.INTENT and self.intent_agent:
             self.hass.async_create_background_task(
                 conversation.async_prepare_agent(
@@ -954,15 +1055,20 @@ class PipelineRun:
         )
 
         if self.debug_recording_queue is not None:
-            # New recording
             self.debug_recording_queue.put_nowait(f"01_stt-{engine}")
 
+        _stt_start = time.monotonic()
+
         try:
-            # Transcribe audio stream
             stt_vad: VoiceCommandSegmenter | None = None
             if self.audio_settings.is_vad_enabled:
                 stt_vad = VoiceCommandSegmenter(
-                    silence_seconds=self.audio_settings.silence_seconds
+                    silence_seconds=self.audio_settings.silence_seconds,
+                    command_seconds=self.audio_settings.command_seconds,
+                    timeout_seconds=self.audio_settings.vad_timeout_seconds,
+                    before_command_speech_threshold=self.audio_settings.before_command_speech_threshold,
+                    in_command_speech_threshold=self.audio_settings.speech_threshold,
+                    before_command_timeout_seconds=self.audio_settings.before_command_timeout_seconds,
                 )
 
             result = await self.stt_provider.async_process_audio_stream(
@@ -970,7 +1076,7 @@ class PipelineRun:
                 self._speech_to_text_stream(audio_stream=stream, stt_vad=stt_vad),
             )
         except (asyncio.CancelledError, TimeoutError):
-            raise  # expected
+            raise
         except hass_nabucasa.auth.Unauthenticated as src_error:
             raise SpeechToTextError(
                 code="cloud-auth-failed",
@@ -985,29 +1091,88 @@ class PipelineRun:
 
         _LOGGER.debug("speech-to-text result %s", result)
 
+        stt_text = result.text
+
         if result.result != stt.SpeechResultState.SUCCESS:
             raise SpeechToTextError(
                 code="stt-stream-failed",
                 message="speech-to-text failed",
             )
 
-        if not result.text:
+        if not stt_text:
             raise SpeechToTextError(
                 code="stt-no-text-recognized", message=""
             )
+
+        if self.audio_settings.enable_trigger_check:
+            trigger_matched = self._check_trigger(stt_text)
+            _stt_duration = time.monotonic() - _stt_start
+            threading.Thread(
+                target=RecognitionLogger.log,
+                args=(self._satellite_id, "vad",
+                      stt_text, trigger_matched, _stt_duration),
+                daemon=True,
+            ).start()
+
+            if not trigger_matched:
+                _LOGGER.debug("STT: no trigger match for '%s', aborting", stt_text[:80])
+                raise SpeechToTextError(
+                    code="stt-no-text-recognized", message=""
+                )
+
+            self._trigger_matched_text = stt_text
+        else:
+            _stt_duration = time.monotonic() - _stt_start
+            threading.Thread(
+                target=RecognitionLogger.log,
+                args=(self._satellite_id, "ask_question",
+                      stt_text, True, _stt_duration),
+                daemon=True,
+            ).start()
 
         self.process_event(
             PipelineEvent(
                 PipelineEventType.STT_END,
                 {
                     "stt_output": {
-                        "text": result.text,
+                        "text": stt_text,
+                        "audio_path": str(self.debug_recording_dir / f"01_stt-{engine}.wav") if self.debug_recording_dir else None,
                     }
                 },
             )
         )
 
-        return result.text
+        return stt_text
+
+    def _check_trigger(self, text: str) -> bool:
+        """Check if text matches any conversation trigger for early stop."""
+        try:
+            from homeassistant.components.conversation import async_get_agent
+            from homeassistant.components.conversation.models import ConversationInput
+            from homeassistant.core import Context
+            agent_id = self.pipeline.conversation_engine or conversation.HOME_ASSISTANT_AGENT
+            agent = async_get_agent(self.hass, agent_id)
+            if agent is None:
+                _LOGGER.debug("STT trigger check: agent not found (id=%s)", agent_id)
+                return False
+            if not hasattr(agent, '_keyword_match_triggers'):
+                _LOGGER.debug("STT trigger check: agent type=%s has no _keyword_match_triggers", type(agent).__name__)
+                return False
+            user_input = ConversationInput(
+                text=text,
+                context=Context(),
+                conversation_id=None,
+                device_id=self._device_id,
+                satellite_id=self._satellite_id,
+                language=self.language,
+                agent_id=agent_id,
+            )
+            result = agent._keyword_match_triggers(user_input)
+            _LOGGER.debug("STT trigger check: text='%s' matched=%s", text[:80], result is not None)
+            return result is not None
+        except Exception as ex:
+            _LOGGER.debug("STT trigger check error: %s", ex)
+        return False
 
     async def _speech_to_text_stream(
         self,
@@ -1016,15 +1181,18 @@ class PipelineRun:
         sample_rate: int = SAMPLE_RATE,
         sample_width: int = SAMPLE_WIDTH,
     ) -> AsyncGenerator[bytes]:
-        """Yield audio chunks until VAD detects silence or speech-to-text completes."""
+        """Yield audio chunks until VAD detects silence, trigger timeout, or timeout."""
         sent_vad_start = False
+        _chunk_count = 0
+        command_start_time = None
+        trigger_timeout = self.audio_settings.trigger_timeout_seconds
         async for chunk in audio_stream:
             self._capture_chunk(chunk.audio)
+            _chunk_count += 1
 
             if stt_vad is not None:
                 chunk_seconds = (len(chunk.audio) // sample_width) / sample_rate
                 if not stt_vad.process(chunk_seconds, chunk.speech_probability):
-                    # Silence detected at the end of voice command
                     self.process_event(
                         PipelineEvent(
                             PipelineEventType.STT_VAD_END,
@@ -1034,7 +1202,6 @@ class PipelineRun:
                     break
 
                 if stt_vad.in_command and (not sent_vad_start):
-                    # Speech detected at start of voice command
                     self.process_event(
                         PipelineEvent(
                             PipelineEventType.STT_VAD_START,
@@ -1042,6 +1209,12 @@ class PipelineRun:
                         )
                     )
                     sent_vad_start = True
+                    command_start_time = time.monotonic()
+
+            if command_start_time is not None and trigger_timeout is not None:
+                if time.monotonic() - command_start_time >= trigger_timeout:
+                    _LOGGER.debug("Trigger timeout (%.1fs) reached, stopping audio", trigger_timeout)
+                    break
 
             yield chunk.audio
 
@@ -1532,6 +1705,7 @@ class PipelineRun:
                     / str(time.monotonic_ns())
                 )
 
+            self.debug_recording_dir = run_recording_dir
             self.debug_recording_queue = Queue()
             self.debug_recording_thread = Thread(
                 target=_pipeline_debug_recording_thread_proc,

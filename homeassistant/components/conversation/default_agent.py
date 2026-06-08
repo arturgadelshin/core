@@ -1460,6 +1460,38 @@ class DefaultAgent(ConversationEntity):
         # Force rebuild on next use
         self._trigger_intents = None
 
+    def _keyword_match_triggers(
+        self, user_input: ConversationInput
+    ) -> SentenceTriggerResult | None:
+        """Pre-filter: ordered keyword subsequence matching."""
+        normalized_text = remove_punctuation(user_input.text).strip().lower().split()
+
+        for trigger_id, trigger_details in enumerate(self._triggers_details):
+            for sentence in trigger_details.sentences:
+                trigger_words = remove_punctuation(sentence).strip().lower().split()
+                if not trigger_words:
+                    continue
+
+                # Ordered subsequence check
+                idx = 0
+                for word in normalized_text:
+                    if idx < len(trigger_words) and word == trigger_words[idx]:
+                        idx += 1
+
+                if idx == len(trigger_words):
+                    # All trigger words found in order
+                    result = RecognizeResult(
+                        intent=Intent(name=str(trigger_id)),
+                        intent_data=IntentData(sentence_texts=[sentence]),
+                    )
+                    return SentenceTriggerResult(
+                        sentence=user_input.text,
+                        sentence_template=sentence,
+                        matched_triggers={trigger_id: result},
+                    )
+
+        return None
+
     def _rebuild_trigger_intents(self) -> None:
         """Rebuild the HassIL intents object from the current trigger sentences."""
         intents_dict = {
@@ -1504,6 +1536,16 @@ class DefaultAgent(ConversationEntity):
         if self._trigger_intents is None:
             # Need to rebuild intents before matching
             self._rebuild_trigger_intents()
+        
+
+        # Сначала — быстрый keyword subsequence pre-filter
+        if keyword_result := self._keyword_match_triggers(user_input):
+            _LOGGER.debug(
+                "Keyword match for '%s': %s",
+                user_input.text,
+                list(keyword_result.matched_triggers),
+            )
+            return keyword_result
 
         assert self._trigger_intents is not None
 

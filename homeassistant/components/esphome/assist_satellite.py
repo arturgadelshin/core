@@ -31,6 +31,7 @@ from voluptuous.humanize import humanize_error
 
 from homeassistant.components import assist_satellite, tts
 from homeassistant.components.assist_pipeline import (
+    AudioSettings,
     PipelineEvent,
     PipelineEventType,
     PipelineStage,
@@ -148,6 +149,7 @@ class EsphomeAssistSatellite(
         )
 
         self._active_pipeline_index = 0
+        self._esphome_audio_settings: VoiceAssistantAudioSettings | None = None
 
     def _get_entity_id(self, suffix: str) -> str | None:
         """Return the entity id for pipeline select, etc."""
@@ -175,6 +177,43 @@ class EsphomeAssistSatellite(
         """Return the entity ID of a wake word by index."""
         id_suffix = "" if index < 1 else f"_{index + 1}"
         return self._get_entity_id(f"wake_word{id_suffix}")
+
+    @callback
+    def _resolve_audio_settings(self) -> AudioSettings:
+        """Resolve audio settings with ESPHome firmware values as base."""
+        settings = super()._resolve_audio_settings()
+
+        esphome = self._esphome_audio_settings
+        if esphome is None:
+            return settings
+
+        return AudioSettings(
+            noise_suppression_level=(
+                settings.noise_suppression_level
+                if settings.noise_suppression_level != 0
+                else esphome.noise_suppression_level
+            ),
+            auto_gain_dbfs=(
+                settings.auto_gain_dbfs
+                if settings.auto_gain_dbfs != 0
+                else esphome.auto_gain
+            ),
+            volume_multiplier=(
+                settings.volume_multiplier
+                if settings.volume_multiplier != 1.0
+                else esphome.volume_multiplier
+            ),
+            is_vad_enabled=settings.is_vad_enabled,
+            silence_seconds=settings.silence_seconds,
+            command_seconds=settings.command_seconds,
+            before_command_speech_threshold=settings.before_command_speech_threshold,
+            speech_threshold=settings.speech_threshold,
+            vad_timeout_seconds=settings.vad_timeout_seconds,
+            before_command_timeout_seconds=settings.before_command_timeout_seconds,
+            vad_mode=settings.vad_mode,
+            trigger_timeout_seconds=settings.trigger_timeout_seconds,
+            enable_trigger_check=settings.enable_trigger_check,
+        )
 
     @property
     def vad_sensitivity_entity_id(self) -> str | None:
@@ -477,6 +516,8 @@ class EsphomeAssistSatellite(
         wake_word_phrase: str | None,
     ) -> int | None:
         """Handle pipeline run request."""
+        self._esphome_audio_settings = audio_settings
+
         # Clear audio queue
         while not self._audio_queue.empty():
             await self._audio_queue.get()
@@ -706,12 +747,32 @@ class EsphomeAssistSatellite(
 
     async def _wrap_audio_stream(self) -> AsyncIterable[bytes]:
         """Yield audio chunks from the queue until None."""
+        _chunk_idx = 0
+        _debug_audio = bytearray()
         while True:
             chunk = await self._audio_queue.get()
             if not chunk:
                 break
 
+            _chunk_idx += 1
+            _debug_audio.extend(chunk)
+            if _chunk_idx == 1:
+                _LOGGER.warning("ESPHome audio stream started, chunk_size=%d", len(chunk))
+
             yield chunk
+
+        if _debug_audio:
+            try:
+                import wave, struct
+                wav_path = f"/config/debug_audio_{int(time.monotonic())}.wav"
+                with wave.open(wav_path, "wb") as wf:
+                    wf.setnchannels(1)
+                    wf.setsampwidth(2)
+                    wf.setframerate(16000)
+                    wf.writeframes(bytes(_debug_audio))
+                _LOGGER.warning("Debug WAV saved: %s (%d bytes, %.1fs)", wav_path, len(_debug_audio), len(_debug_audio) / 32000.0)
+            except Exception as e:
+                _LOGGER.warning("Failed to save debug WAV: %s", e)
 
     def _stop_pipeline(self) -> None:
         """Request pipeline to be stopped by ending the audio stream and continue processing."""
@@ -884,3 +945,6 @@ async def async_setup(hass: HomeAssistant) -> None:
             )
         ]
     )
+
+
+

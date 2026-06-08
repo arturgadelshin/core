@@ -30,6 +30,7 @@ from homeassistant.components.media_player import async_process_play_media_url
 from homeassistant.core import Context, callback
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import chat_session, entity
+from homeassistant.helpers.restore_state import RestoreEntity
 from homeassistant.helpers.entity import EntityDescription
 
 from .const import PREANNOUNCE_URL, AssistSatelliteEntityFeature
@@ -122,8 +123,10 @@ class AssistSatelliteAnswer:
     slots: dict[str, Any] = field(default_factory=dict)
     """Matched slots from answer."""
 
+    audio_url: str | None = None  # НОВОЕ ПОЛЕ
+    """URL to audio recording of the response."""
 
-class AssistSatelliteEntity(entity.Entity):
+class AssistSatelliteEntity(RestoreEntity):
     """Entity encapsulating the state and functionality of an Assist satellite."""
 
     entity_description: AssistSatelliteEntityDescription
@@ -141,7 +144,18 @@ class AssistSatelliteEntity(entity.Entity):
     _attr_tts_options: dict[str, Any] | None = None
     _pipeline_task: asyncio.Task | None = None
     _ask_question_future: asyncio.Future[str | None] | None = None
-
+    _last_stt_audio_path: str | None = None
+    _speech_threshold: float = 0.5
+    _vad_timeout_seconds: float = 30.0
+    _silence_seconds: float = 2.0
+    _command_seconds: float = 2.0
+    _before_command_speech_threshold: float = 0.5
+    _vad_mode: str = "per_pipeline"
+    _before_command_timeout_seconds: float = 4.0
+    _noise_suppression_level: int = 0
+    _auto_gain_dbfs: int = 0
+    _volume_multiplier: float = 1.0
+    _trigger_timeout_seconds: float = 7.0
     __assist_satellite_state = AssistSatelliteState.IDLE
 
     @final
@@ -159,6 +173,71 @@ class AssistSatelliteEntity(entity.Entity):
     def vad_sensitivity_entity_id(self) -> str | None:
         """Entity ID of the VAD sensitivity to use for the next conversation."""
         return self._attr_vad_sensitivity_entity_id
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        """Return extra state attributes."""
+        return {
+            "speech_threshold": self._speech_threshold,
+            "vad_timeout_seconds": self._vad_timeout_seconds,
+            "silence_seconds": self._silence_seconds,
+            "command_seconds": self._command_seconds,
+            "before_command_speech_threshold": self._before_command_speech_threshold,
+            "vad_mode": self._vad_mode,
+            "before_command_timeout_seconds": self._before_command_timeout_seconds,
+            "noise_suppression_level": self._noise_suppression_level,
+            "auto_gain_dbfs": self._auto_gain_dbfs,
+            "volume_multiplier": self._volume_multiplier,
+            "trigger_timeout_seconds": self._trigger_timeout_seconds,
+        }
+
+    async def async_added_to_hass(self) -> None:
+        """Load VAD settings from SQLite store or config defaults."""
+        await super().async_added_to_hass()
+
+        try:
+            from .vad_settings_db import async_get_store, get_pipeline_defaults
+            store = await async_get_store(self.hass)
+            settings = await self.hass.async_add_executor_job(
+                store.get, self.entity_id
+            )
+        except Exception as ex:
+            _LOGGER.warning("Failed to load VAD settings from DB: %s", ex)
+            settings = None
+
+        defaults = get_pipeline_defaults(self.hass)
+
+        if settings is not None:
+            self._speech_threshold = float(settings.get("speech_threshold", defaults["speech_threshold"]))
+            self._vad_timeout_seconds = float(settings.get("vad_timeout_seconds", defaults["vad_timeout_seconds"]))
+            self._silence_seconds = float(settings.get("silence_seconds", defaults["silence_seconds"]))
+            self._command_seconds = float(settings.get("command_seconds", defaults["command_seconds"]))
+            self._before_command_speech_threshold = float(
+                settings.get("before_command_speech_threshold", defaults["before_command_speech_threshold"])
+            )
+            self._vad_mode = str(settings.get("vad_mode", defaults["vad_mode"]))
+            self._before_command_timeout_seconds = float(
+                settings.get("before_command_timeout_seconds", defaults["before_command_timeout_seconds"])
+            )
+            self._noise_suppression_level = int(
+                settings.get("noise_suppression_level", defaults["noise_suppression_level"])
+            )
+            self._auto_gain_dbfs = int(settings.get("auto_gain_dbfs", defaults["auto_gain_dbfs"]))
+            self._volume_multiplier = float(settings.get("volume_multiplier", defaults.get("volume_multiplier", 1.0)))
+            self._trigger_timeout_seconds = float(settings.get("trigger_timeout_seconds", defaults.get("trigger_timeout_seconds", 7.0)))
+            _LOGGER.debug("Loaded settings from DB for %s: vad_mode=%s", self.entity_id, self._vad_mode)
+        else:
+            self._speech_threshold = float(defaults["speech_threshold"])
+            self._vad_timeout_seconds = float(defaults["vad_timeout_seconds"])
+            self._silence_seconds = float(defaults["silence_seconds"])
+            self._command_seconds = float(defaults["command_seconds"])
+            self._before_command_speech_threshold = float(defaults["before_command_speech_threshold"])
+            self._vad_mode = str(defaults["vad_mode"])
+            self._before_command_timeout_seconds = float(defaults["before_command_timeout_seconds"])
+            self._noise_suppression_level = int(defaults["noise_suppression_level"])
+            self._auto_gain_dbfs = int(defaults["auto_gain_dbfs"])
+            self._volume_multiplier = float(defaults.get("volume_multiplier", 1.0))
+            self._trigger_timeout_seconds = float(defaults.get("trigger_timeout_seconds", 7.0))
 
     @property
     def tts_options(self) -> dict[str, Any] | None:
@@ -366,20 +445,31 @@ class AssistSatelliteEntity(entity.Entity):
         self._is_announcing = True
         self._set_state(AssistSatelliteState.RESPONDING)
         self._ask_question_future = asyncio.Future()
+        self._last_stt_audio_path = None
 
         try:
-            # Wait for announcement to finish
             await self.async_start_conversation(announcement)
 
-            # Wait for response text
             response_text = await self._ask_question_future
             if response_text is None:
                 raise HomeAssistantError("No answer from question")
 
-            if not answers:
-                return AssistSatelliteAnswer(id=None, sentence=response_text)
+            audio_url = self._last_stt_audio_path
 
-            return self._question_response_to_answer(response_text, answers)
+            if not answers:
+                return AssistSatelliteAnswer(
+                    id=None,
+                    sentence=response_text,
+                    audio_url=audio_url,
+                )
+
+            answer = self._question_response_to_answer(response_text, answers)
+            return AssistSatelliteAnswer(
+                id=answer.id,
+                sentence=answer.sentence,
+                slots=answer.slots,
+                audio_url=audio_url,
+            )
         finally:
             self._is_announcing = False
             self._set_state(AssistSatelliteState.IDLE)
@@ -525,9 +615,7 @@ class AssistSatelliteEntity(entity.Entity):
                         satellite_id=self.entity_id,
                         tts_audio_output=self.tts_options,
                         wake_word_phrase=wake_word_phrase,
-                        audio_settings=AudioSettings(
-                            silence_seconds=self._resolve_vad_sensitivity()
-                        ),
+                        audio_settings=self._resolve_audio_settings(),
                         start_stage=start_stage,
                         end_stage=end_stage,
                         conversation_extra_system_prompt=extra_system_prompt,
@@ -565,6 +653,9 @@ class AssistSatelliteEntity(entity.Entity):
         elif event.type is PipelineEventType.STT_START:
             self._set_state(AssistSatelliteState.LISTENING)
         elif event.type is PipelineEventType.STT_END:
+            _LOGGER.debug("STT_END event: %s", event.data) 
+            if event.data and "stt_output" in event.data:
+                self._last_stt_audio_path = event.data["stt_output"].get("audio_path")
             # Intercepting text for ask question
             if (
                 (self._ask_question_future is not None)
@@ -637,6 +728,104 @@ class AssistSatelliteEntity(entity.Entity):
             vad_sensitivity = vad.VadSensitivity(vad_sensitivity_state.state)
 
         return vad.VadSensitivity.to_seconds(vad_sensitivity)
+
+    @callback
+    def _resolve_audio_settings(self) -> AudioSettings:
+        is_ask_question = self._ask_question_future is not None
+        trigger_timeout = self._vad_timeout_seconds if is_ask_question else self._trigger_timeout_seconds
+        return AudioSettings(
+            silence_seconds=self._silence_seconds,
+            command_seconds=self._command_seconds,
+            before_command_speech_threshold=self._before_command_speech_threshold,
+            speech_threshold=self._speech_threshold,
+            vad_timeout_seconds=self._vad_timeout_seconds,
+            vad_mode=self._vad_mode,
+            before_command_timeout_seconds=self._before_command_timeout_seconds,
+            noise_suppression_level=self._noise_suppression_level,
+            auto_gain_dbfs=self._auto_gain_dbfs,
+            volume_multiplier=self._volume_multiplier,
+            trigger_timeout_seconds=trigger_timeout,
+            enable_trigger_check=not is_ask_question,
+        )
+
+    async def _save_param(self, param: str, value: Any) -> None:
+        """Save a parameter to SQLite store."""
+        try:
+            from .vad_settings_db import DATA_VAD_SETTINGS
+            store = self.hass.data.get(DATA_VAD_SETTINGS)
+            if store is not None:
+                await self.hass.async_add_executor_job(
+                    store.set_param, self.entity_id, param, value
+                )
+        except Exception as ex:
+            _LOGGER.warning("Failed to save VAD param %s: %s", param, ex)
+
+    async def async_set_speech_threshold(self, value: float) -> None:
+        """Set speech threshold."""
+        self._speech_threshold = float(max(0.1, min(1.0, value)))
+        await self._save_param("speech_threshold", self._speech_threshold)
+        self.async_write_ha_state()
+
+    async def async_set_vad_timeout(self, value: float) -> None:
+        """Set VAD timeout in seconds."""
+        self._vad_timeout_seconds = float(max(1.0, min(60.0, value)))
+        await self._save_param("vad_timeout_seconds", self._vad_timeout_seconds)
+        self.async_write_ha_state()
+
+    async def async_set_silence_seconds(self, value: float) -> None:
+        """Set silence seconds before cutting off."""
+        self._silence_seconds = float(max(0.3, min(10.0, value)))
+        await self._save_param("silence_seconds", self._silence_seconds)
+        self.async_write_ha_state()
+
+    async def async_set_command_seconds(self, value: float) -> None:
+        """Set minimum command duration in seconds."""
+        self._command_seconds = float(max(0.3, min(10.0, value)))
+        await self._save_param("command_seconds", self._command_seconds)
+        self.async_write_ha_state()
+
+    async def async_set_before_command_speech_threshold(self, value: float) -> None:
+        """Set speech threshold before command start."""
+        self._before_command_speech_threshold = float(max(0.05, min(0.9, value)))
+        await self._save_param("before_command_speech_threshold", self._before_command_speech_threshold)
+        self.async_write_ha_state()
+
+    async def async_set_vad_mode(self, value: str) -> None:
+        """Set VAD mode: 'singleton' or 'per_pipeline'."""
+        if value in ("singleton", "per_pipeline"):
+            self._vad_mode = value
+            await self._save_param("vad_mode", self._vad_mode)
+            self.async_write_ha_state()
+
+    async def async_set_before_command_timeout(self, value: float) -> None:
+        """Set timeout before voice command starts (abort if no speech)."""
+        self._before_command_timeout_seconds = float(max(1.0, min(30.0, value)))
+        await self._save_param("before_command_timeout_seconds", self._before_command_timeout_seconds)
+        self.async_write_ha_state()
+
+    async def async_set_noise_suppression(self, value: int) -> None:
+        """Set noise suppression level (0=off, 1-4)."""
+        self._noise_suppression_level = int(max(0, min(4, value)))
+        await self._save_param("noise_suppression_level", self._noise_suppression_level)
+        self.async_write_ha_state()
+
+    async def async_set_auto_gain(self, value: int) -> None:
+        """Set automatic gain in dbFS (0=off, 1-31)."""
+        self._auto_gain_dbfs = int(max(0, min(31, value)))
+        await self._save_param("auto_gain_dbfs", self._auto_gain_dbfs)
+        self.async_write_ha_state()
+
+    async def async_set_volume_multiplier(self, value: float) -> None:
+        """Set volume multiplier for microphone audio."""
+        self._volume_multiplier = float(max(0.1, min(30.0, value)))
+        await self._save_param("volume_multiplier", self._volume_multiplier)
+        self.async_write_ha_state()
+
+    async def async_set_trigger_timeout_seconds(self, value: float) -> None:
+        """Set trigger timeout seconds."""
+        self._trigger_timeout_seconds = float(max(1.0, min(30.0, value)))
+        await self._save_param("trigger_timeout_seconds", self._trigger_timeout_seconds)
+        self.async_write_ha_state()
 
     async def _resolve_announcement_media_id(
         self,

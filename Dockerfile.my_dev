@@ -4,7 +4,6 @@ FROM mcr.microsoft.com/vscode/devcontainers/base:debian
 
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 
-
 # Установка системных зависимостей с повторными попытками
 RUN for i in {1..5}; do \
        apt-get update && \
@@ -37,16 +36,11 @@ RUN for i in {1..5}; do \
     apt-get clean && \
     rm -rf /var/lib/apt/lists/*
 
-
-
 # Добавляем go2rtc (опционально, если используется)
 COPY --from=ghcr.io/alexxit/go2rtc:latest /usr/local/bin/go2rtc /usr/local/bin/go2rtc
 
 # Копируем uv (современный Python-инструмент)
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
-# ENV UV_INDEX_URL=https://mirrors.sustech.edu.cn/pypi/web/simple
-# ENV UV_HTTP_TIMEOUT=300
-# ENV UV_CONNECT_TIMEOUT=60
 
 # Создаём пользователя для запуска (но позже переключимся на root для /config)
 USER vscode
@@ -54,37 +48,42 @@ USER vscode
 # Устанавливаем Python и venv
 WORKDIR /home/vscode
 COPY .python-version ./
-
+RUN uv python install
 
 ENV VIRTUAL_ENV="/home/vscode/.local/ha-venv"
 RUN uv venv $VIRTUAL_ENV
 ENV PATH="$VIRTUAL_ENV/bin:$PATH"
 
-RUN uv pip install --no-cache-dir numpy av pillow isal
+RUN uv pip install --no-cache-dir numpy av pillow
 
 # Клонируем и устанавливаем hass-release (опционально, для dev-сборок)
-RUN git clone --depth 1 https://github.com/home-assistant/hass-release ~/hass-release \
-    && uv pip install -e ~/hass-release/
+# RUN git clone --depth 1 https://github.com/home-assistant/hass-release ~/hass-release \
+#     && uv pip install -e ~/hass-release/
 
-#RUN uv pip install "pycares>=4.4.0,<5.0.0" "aiodns>=3.2.0,<4.0.0"
 # Копируем зависимости и устанавливаем их
 COPY requirements.txt ./
 COPY package_constraints_fix.txt ./
 COPY homeassistant/package_constraints.txt homeassistant/package_constraints.txt
 RUN uv pip install -r requirements.txt -c package_constraints_fix.txt
 
-
 # Фикс: pycares 4.x + aiodns 3.x (совместимая пара)
 RUN uv pip install "pycares==4.4.0" --no-binary pycares --index-url https://mirrors.aliyun.com/pypi/simple/ && \
     uv pip install "aiodns==3.5.0" --no-deps --index-url https://mirrors.aliyun.com/pypi/simple/
 
-# Недостающие пакеты через китайское зеркало
+# Фикс: aiodns 3.x annotations
+RUN AIODNS_INIT="$(python -c 'import importlib.util; print(importlib.util.find_spec("aiodns").origin)')" \
+    && sed -i '1s/^/from __future__ import annotations\n/' "$AIODNS_INIT"
+
+# Silero VAD: torch CPU-only + silero-vad
 RUN uv pip install torch --index-url https://download.pytorch.org/whl/cpu --no-cache-dir
-RUN uv pip install PyTurboJPEG==1.8.0 pymicro-vad pyring-buffer silero-vad pyspeex-noise \
+RUN uv pip install silero-vad pyspeex-noise pymicro-vad pyring-buffer \
     home-assistant-intents==2025.10.28 file-read-backwards==2.0.0 \
     --index-url https://mirrors.aliyun.com/pypi/simple/
 
-
+# Копируем JIT модель silero_vad.jit к нашему компоненту
+RUN SILERO_MODEL=$(python -c "import silero_vad; import pathlib; print(pathlib.Path(silero_vad.__file__).parent / 'data' / 'silero_vad.jit')") \
+    && mkdir -p /workspaces/core/homeassistant/components/assist_pipeline/ \
+    && cp "$SILERO_MODEL" /workspaces/core/homeassistant/components/assist_pipeline/silero_vad.jit || true
 
 USER root
 # Копируем **весь ваш код** внутрь контейнера
@@ -92,15 +91,11 @@ COPY . /workspaces/core
 WORKDIR /workspaces/core
 
 # Устанавливаем Home Assistant в режиме разработки
-# RUN uv pip install home-assistant-frontend==20251105.0
 RUN uv pip install -e .
 
 # Переключаемся на root, чтобы иметь доступ к /config
 USER root
 WORKDIR /config
-
-
-
 
 # Запуск Home Assistant
 CMD ["python", "-m", "homeassistant", "--config", "/config"]
