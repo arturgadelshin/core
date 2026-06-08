@@ -68,14 +68,9 @@ class SileroVadSpeexEnhancer(AudioEnhancer):
         self._silero_vad = silero_vad
         self._audio_buffer = bytearray()
         self._last_probability: float | None = None
-        self._chunk_count = 0
-        self._peak_history: list[int] = []
-        self._target_peak = 20000
 
     def enhance_chunk(self, audio: bytes, timestamp_ms: int) -> EnhancedAudioChunk:
         """Enhance 10ms chunk of PCM audio @ 16Khz with 16-bit mono samples."""
-        import array as _array
-
         speech_probability: float | None = self._last_probability
 
         assert len(audio) == BYTES_PER_CHUNK
@@ -85,7 +80,6 @@ class SileroVadSpeexEnhancer(AudioEnhancer):
 
         if self._silero_vad is not None and self.is_vad_enabled:
             self._audio_buffer.extend(audio)
-            self._chunk_count += 1
             if len(self._audio_buffer) >= SILERO_BYTES_PER_CHUNK:
                 chunk_32ms = bytes(self._audio_buffer[:SILERO_BYTES_PER_CHUNK])
                 self._audio_buffer = self._audio_buffer[SILERO_BYTES_PER_CHUNK:]

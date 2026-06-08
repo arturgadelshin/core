@@ -176,19 +176,19 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
     )
 
     component.async_register_entity_service(
-        "set_recognition_mode",
-        cv.make_entity_service_schema(
-            {vol.Required("value"): vol.In(["vad", "streaming"])}
-        ),
-        "async_set_recognition_mode",
-    )
-
-    component.async_register_entity_service(
         "set_volume_multiplier",
         cv.make_entity_service_schema(
             {vol.Required("value"): vol.All(vol.Coerce(float), vol.Range(min=0.1, max=30.0))}
         ),
         "async_set_volume_multiplier",
+    )
+
+    component.async_register_entity_service(
+        "set_trigger_timeout",
+        cv.make_entity_service_schema(
+            {vol.Required("value"): vol.All(vol.Coerce(float), vol.Range(min=1.0, max=30.0))}
+        ),
+        "async_set_trigger_timeout_seconds",
     )
 
     async def handle_ask_question(call: ServiceCall) -> dict[str, Any]:

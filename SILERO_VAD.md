@@ -69,12 +69,14 @@ STT (GigaAM через wyoming-onnxasr)
 | `speech_threshold` | **0.5** | 0.1 — 1.0 |
 | `before_command_speech_threshold` | **0.5** | 0.05 — 0.9 |
 | `silence_seconds` | **2.0** | 0.3 — 10.0 |
-| `command_seconds` | **2.0** | 0.3 — 10.0 |
+| `command_seconds` | **1.5** | 0.3 — 10.0 |
 | `vad_timeout_seconds` | **30.0** | 1.0 — 60.0 |
 | `vad_mode` | **per_pipeline** | singleton / per_pipeline |
-| `before_command_timeout_seconds` | **4.0** | 1.0 — 30.0 |
+| `before_command_timeout_seconds` | **5.0** | 1.0 — 30.0 |
 | `noise_suppression_level` | **0** | 0 — 4 |
 | `auto_gain_dbfs` | **0** | 0 — 31 |
+| `volume_multiplier` | **1.0** | 0.1 — 30.0 |
+| `trigger_timeout_seconds` | **7.0** | 1.0 — 30.0 |
 
 ### Подробное описание параметров
 
@@ -339,6 +341,8 @@ vad_mode: {{ state_attr('assist_satellite.gg_voice_tdm_none', 'vad_mode') }}
 before_command_timeout_seconds: {{ state_attr('assist_satellite.gg_voice_tdm_none', 'before_command_timeout_seconds') }}
 noise_suppression_level: {{ state_attr('assist_satellite.gg_voice_tdm_none', 'noise_suppression_level') }}
 auto_gain_dbfs: {{ state_attr('assist_satellite.gg_voice_tdm_none', 'auto_gain_dbfs') }}
+volume_multiplier: {{ state_attr('assist_satellite.gg_voice_tdm_none', 'volume_multiplier') }}
+trigger_timeout_seconds: {{ state_attr('assist_satellite.gg_voice_tdm_none', 'trigger_timeout_seconds') }}
 ```
 
 ---
@@ -391,8 +395,14 @@ prob <= speech_threshold? ─ НЕТ (тишина) → _silence_seconds_left -=
 
 ## Персистентность
 
-Все параметры хранятся через `RestoreEntity` — при перезапуске HA значения
-восстанавливаются из `last_state.attributes`. Не нужно устанавливать заново после рестарта.
+Настройки хранятся в SQLite БД: `/config/assist_satellite_settings/vad_settings.db`
+
+**Приоритет:** SQLite (per-satellite) > `conf_assist_pipeline.yaml` (defaults) > `HARDCODED_DEFAULTS` (code)
+
+- `vad_settings_db.py` — `VadSettingsStore`, автоматические ALTER TABLE миграции
+- `conf_assist_pipeline.yaml` — централизованные дефолты для всех спутников
+- Настройки загружаются в `entity.py:async_added_to_hass()` из БД
+- Сохраняются через `_save_param()` при изменении через сервисы
 
 ---
 
@@ -418,12 +428,14 @@ prob <= speech_threshold? ─ НЕТ (тишина) → _silence_seconds_left -=
 speech_threshold: 0.5
 before_command_speech_threshold: 0.5
 silence_seconds: 2.0
-command_seconds: 2.0
+command_seconds: 1.5
 vad_timeout_seconds: 30
 vad_mode: per_pipeline
-before_command_timeout_seconds: 4.0
+before_command_timeout_seconds: 5.0
 noise_suppression_level: 0
 auto_gain_dbfs: 0
+volume_multiplier: 1.0
+trigger_timeout_seconds: 7.0
 ```
 
 ### Шумное помещение
@@ -437,6 +449,8 @@ vad_mode: per_pipeline
 before_command_timeout_seconds: 3.0
 noise_suppression_level: 2
 auto_gain_dbfs: 0
+volume_multiplier: 1.0
+trigger_timeout_seconds: 5.0
 ```
 
 ### Длинные диктовки
@@ -450,6 +464,8 @@ vad_mode: per_pipeline
 before_command_timeout_seconds: 6.0
 noise_suppression_level: 0
 auto_gain_dbfs: 0
+volume_multiplier: 1.0
+trigger_timeout_seconds: 15.0
 ```
 
 ### Тихий микрофон
@@ -463,6 +479,8 @@ vad_mode: per_pipeline
 before_command_timeout_seconds: 4.0
 noise_suppression_level: 1
 auto_gain_dbfs: 15
+volume_multiplier: 2.0
+trigger_timeout_seconds: 7.0
 ```
 
 ---
@@ -548,16 +566,31 @@ homeassistant/components/
 │   ├── __init__.py              # Инициализация, загрузка singleton Silero
 │   ├── const.py                 # DATA_SILERO_VAD, SILERO_* константы
 │   ├── silero_vad_manager.py    # SileroVadSingleton, SileroVadStream, SileroVadPerPipeline
-│   ├── audio_enhancer.py        # SileroVadSpeexEnhancer (буферизация 10ms→32ms)
+│   ├── audio_enhancer.py        # SileroVadSpeexEnhancer (буферизация 10ms→32ms, Speex)
 │   ├── vad.py                   # VoiceCommandSegmenter (state machine)
-│   ├── pipeline.py              # AudioSettings, PipelineRun, _create_silero_vad()
+│   ├── pipeline.py              # AudioSettings (12 параметров), _check_trigger(), RecognitionLogger
+│   ├── recognition_log.py       # RecognitionLogger — лог распознаваний, gzip ротация
 │   └── silero_vad.onnx          # ONNX модель (НЕ ИСПОЛЬЗУЕТСЯ — сломана)
 │
 ├── assist_satellite/
-│   ├── __init__.py              # Регистрация 9 сервисов VAD
-│   ├── entity.py                # AssistSatelliteEntity с 9 атрибутами + RestoreEntity
-│   └── services.yaml            # Определения сервисов (русские описания, ползунки)
+│   ├── __init__.py              # Регистрация 11 сервисов VAD
+│   ├── entity.py                # AssistSatelliteEntity с 12 атрибутами, SQLite load/save
+│   ├── services.yaml            # Определения сервисов (русские описания, ползунки)
+│   └── vad_settings_db.py       # VadSettingsStore (SQLite), HARDCODED_DEFAULTS, YAML defaults
 │
-└── esphome/
-    └── assist_satellite.py      # ESPHome satellite entity, debug WAV saving
+├── esphome/
+│   └── assist_satellite.py      # ESPHome satellite entity, _resolve_audio_settings() fallback
+│
+└── wyoming/
+    └── stt.py                   # _batch_process() — отправка аудио, чтение Transcript
+
+config/ (volume mount)
+├── conf_assist_pipeline.yaml    # Централизованные дефолты для параметров VAD
+├── assist_satellite_settings/
+│   └── vad_settings.db          # SQLite — настройки по каждому спутнику
+└── assist_pipeline/
+    └── recognition_log.txt      # Лог всех распознаваний (gzip ротация >100MB)
+
+wyoming-onnxasr/
+└── server.py                    # GigaAM v3 RNN-T int8, batch режим
 ```

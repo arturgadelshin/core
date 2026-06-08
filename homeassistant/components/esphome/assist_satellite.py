@@ -211,7 +211,8 @@ class EsphomeAssistSatellite(
             vad_timeout_seconds=settings.vad_timeout_seconds,
             before_command_timeout_seconds=settings.before_command_timeout_seconds,
             vad_mode=settings.vad_mode,
-            recognition_mode=settings.recognition_mode,
+            trigger_timeout_seconds=settings.trigger_timeout_seconds,
+            enable_trigger_check=settings.enable_trigger_check,
         )
 
     @property
