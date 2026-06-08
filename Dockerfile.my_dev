@@ -74,21 +74,21 @@ RUN uv pip install "pycares==4.4.0" --no-binary pycares --index-url https://mirr
 RUN AIODNS_INIT="$(python -c 'import importlib.util; print(importlib.util.find_spec("aiodns").origin)')" \
     && sed -i '1s/^/from __future__ import annotations\n/' "$AIODNS_INIT"
 
-# Silero VAD: torch CPU-only + silero-vad
-RUN uv pip install torch --index-url https://download.pytorch.org/whl/cpu --no-cache-dir
-RUN uv pip install silero-vad pyspeex-noise pymicro-vad pyring-buffer \
+# Silero VAD: torch CPU-only (no torchaudio)
+RUN UV_HTTP_TIMEOUT=600 uv pip install --index-url https://mirrors.aliyun.com/pypi/simple --extra-index-url https://download.pytorch.org/whl/cpu torch --no-deps \
+    && UV_HTTP_TIMEOUT=600 uv pip install --index-url https://mirrors.aliyun.com/pypi/simple silero-vad --no-deps \
+    && uv pip install pyspeex-noise pymicro-vad pyring-buffer \
     home-assistant-intents==2025.10.28 file-read-backwards==2.0.0 \
     --index-url https://mirrors.aliyun.com/pypi/simple/
-
-# Копируем JIT модель silero_vad.jit к нашему компоненту
-RUN SILERO_MODEL=$(python -c "import silero_vad; import pathlib; print(pathlib.Path(silero_vad.__file__).parent / 'data' / 'silero_vad.jit')") \
-    && mkdir -p /workspaces/core/homeassistant/components/assist_pipeline/ \
-    && cp "$SILERO_MODEL" /workspaces/core/homeassistant/components/assist_pipeline/silero_vad.jit || true
 
 USER root
 # Копируем **весь ваш код** внутрь контейнера
 COPY . /workspaces/core
 WORKDIR /workspaces/core
+
+# Копируем JIT модель из silero-vad пакета к нашему компоненту
+RUN SILERO_MODEL=$(find /home/vscode/.local/ha-venv -name "silero_vad.jit" -type f 2>/dev/null | head -1) \
+    && if [ -n "$SILERO_MODEL" ]; then cp "$SILERO_MODEL" /workspaces/core/homeassistant/components/assist_pipeline/silero_vad.jit; fi
 
 # Устанавливаем Home Assistant в режиме разработки
 RUN uv pip install -e .
