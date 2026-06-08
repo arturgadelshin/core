@@ -17,15 +17,23 @@ _LOGGER = logging.getLogger(__name__)
 
 def _find_jit_model_path() -> Path:
     """Find Silero VAD JIT model file."""
+    candidates = [
+        Path(__file__).parent / "silero_vad.jit",
+    ]
     try:
-        import silero_vad
-        jit_path = Path(silero_vad.__file__).parent / "data" / "silero_vad.jit"
-        if jit_path.exists():
-            return jit_path
-    except ImportError:
+        import importlib.util
+        spec = importlib.util.find_spec("silero_vad")
+        if spec and spec.submodule_search_locations:
+            for sp in spec.submodule_search_locations:
+                candidates.append(Path(sp) / "data" / "silero_vad.jit")
+    except Exception:
         pass
+    for p in candidates:
+        if p.exists():
+            _LOGGER.debug("Found Silero VAD JIT model: %s", p)
+            return p
     raise FileNotFoundError(
-        "Silero VAD JIT model not found. Install silero-vad package."
+        f"Silero VAD JIT model not found. Searched: {candidates}"
     )
 
 
