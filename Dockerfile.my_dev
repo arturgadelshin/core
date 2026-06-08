@@ -1,34 +1,41 @@
 # Dockerfile.dev — для локального запуска модифицированного Home Assistant
+# syntax = docker/dockerfile:1.3
 FROM mcr.microsoft.com/vscode/devcontainers/base:debian
 
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 
-# Установка системных зависимостей, включая библиотеки для av==13.1.0
-RUN \
-    apt-get update \
-    && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-        bluez \
-        ffmpeg \
-        libudev-dev \
-        libavformat-dev \
-        libavcodec-dev \
-        libavdevice-dev \
-        libavutil-dev \
-        libswscale-dev \
-        libswresample-dev \
-        libavfilter-dev \
-        libpcap-dev \
-        libturbojpeg0 \
-        libyaml-dev \
-        libxml2 \
-        git \
-        cmake \
-        autoconf \
-        build-essential \
-        pkg-config \
-        python3-dev \
-    && apt-get clean \
-    && rm -rf /var/lib/apt/lists/*
+
+# Установка системных зависимостей с повторными попытками
+RUN for i in {1..5}; do \
+       apt-get update && \
+       DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+           bluez \
+           ffmpeg \
+           libudev-dev \
+           libavformat-dev \
+           libavcodec-dev \
+           libavdevice-dev \
+           libavutil-dev \
+           libswscale-dev \
+           libswresample-dev \
+           libavfilter-dev \
+           libpcap-dev \
+           libturbojpeg0 \
+           libyaml-dev \
+           libxml2 \
+           libzstd-dev \
+           git \
+           cmake \
+           autoconf \
+           build-essential \
+           pkg-config \
+           python3-dev && \
+       break; \
+       echo "Попытка $i не удалась, повтор через 30 секунд..."; \
+       sleep 30; \
+    done && \
+    apt-get clean && \
+    rm -rf /var/lib/apt/lists/*
 
 
 
@@ -37,8 +44,9 @@ COPY --from=ghcr.io/alexxit/go2rtc:latest /usr/local/bin/go2rtc /usr/local/bin/g
 
 # Копируем uv (современный Python-инструмент)
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
-
-
+# ENV UV_INDEX_URL=https://mirrors.sustech.edu.cn/pypi/web/simple
+# ENV UV_HTTP_TIMEOUT=300
+# ENV UV_CONNECT_TIMEOUT=60
 
 # Создаём пользователя для запуска (но позже переключимся на root для /config)
 USER vscode
@@ -46,22 +54,36 @@ USER vscode
 # Устанавливаем Python и venv
 WORKDIR /home/vscode
 COPY .python-version ./
-RUN uv python install
+
 
 ENV VIRTUAL_ENV="/home/vscode/.local/ha-venv"
 RUN uv venv $VIRTUAL_ENV
 ENV PATH="$VIRTUAL_ENV/bin:$PATH"
 
-RUN uv pip install --no-cache-dir numpy av pillow
+RUN uv pip install --no-cache-dir numpy av pillow isal
 
 # Клонируем и устанавливаем hass-release (опционально, для dev-сборок)
 RUN git clone --depth 1 https://github.com/home-assistant/hass-release ~/hass-release \
     && uv pip install -e ~/hass-release/
 
+#RUN uv pip install "pycares>=4.4.0,<5.0.0" "aiodns>=3.2.0,<4.0.0"
 # Копируем зависимости и устанавливаем их
 COPY requirements.txt ./
+COPY package_constraints_fix.txt ./
 COPY homeassistant/package_constraints.txt homeassistant/package_constraints.txt
-RUN uv pip install -r requirements.txt
+RUN uv pip install -r requirements.txt -c package_constraints_fix.txt
+
+
+# Фикс: pycares 4.x + aiodns 3.x (совместимая пара)
+RUN uv pip install "pycares==4.4.0" --no-binary pycares --index-url https://mirrors.aliyun.com/pypi/simple/ && \
+    uv pip install "aiodns==3.5.0" --no-deps --index-url https://mirrors.aliyun.com/pypi/simple/
+
+# Недостающие пакеты через китайское зеркало
+RUN uv pip install torch --index-url https://download.pytorch.org/whl/cpu --no-cache-dir
+RUN uv pip install PyTurboJPEG==1.8.0 pymicro-vad pyring-buffer silero-vad pyspeex-noise \
+    home-assistant-intents==2025.10.28 file-read-backwards==2.0.0 \
+    --index-url https://mirrors.aliyun.com/pypi/simple/
+
 
 
 USER root
@@ -70,11 +92,15 @@ COPY . /workspaces/core
 WORKDIR /workspaces/core
 
 # Устанавливаем Home Assistant в режиме разработки
+# RUN uv pip install home-assistant-frontend==20251105.0
 RUN uv pip install -e .
 
 # Переключаемся на root, чтобы иметь доступ к /config
 USER root
 WORKDIR /config
+
+
+
 
 # Запуск Home Assistant
 CMD ["python", "-m", "homeassistant", "--config", "/config"]
