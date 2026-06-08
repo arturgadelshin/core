@@ -1,0 +1,14 @@
+FROM my-ha-dev:latest
+
+RUN uv pip install "pycares==4.4.0" --no-binary pycares \
+    --index-url https://mirrors.aliyun.com/pypi/simple/ && \
+    uv pip install "aiodns==3.5.0" --no-deps \
+    --index-url https://mirrors.aliyun.com/pypi/simple/
+
+RUN uv pip install \
+    PyTurboJPEG==1.8.0 \
+    home-assistant-intents==2025.10.28 \
+    file-read-backwards==2.0.0 \
+    --index-url https://mirrors.aliyun.com/pypi/simple/
+
+CMD ["python", "-m", "homeassistant", "--config", "/config"]

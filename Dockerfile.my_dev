@@ -67,7 +67,7 @@ COPY homeassistant/package_constraints.txt homeassistant/package_constraints.txt
 RUN uv pip install -r requirements.txt -c package_constraints_fix.txt
 
 # Фикс: pycares 4.x + aiodns 3.x (совместимая пара)
-RUN uv pip install "pycares==4.4.0" --no-binary pycares --index-url https://mirrors.aliyun.com/pypi/simple/ && \
+RUN uv pip install "pycares==4.9.0" --no-binary pycares --index-url https://mirrors.aliyun.com/pypi/simple/ && \
     uv pip install "aiodns==3.5.0" --no-deps --index-url https://mirrors.aliyun.com/pypi/simple/
 
 # Фикс: aiodns 3.x annotations
