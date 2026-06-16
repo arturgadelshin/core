@@ -80,9 +80,7 @@ RUN UV_HTTP_TIMEOUT=600 uv pip install --index-url https://mirrors.aliyun.com/py
     && uv pip install pyspeex-noise pymicro-vad pyring-buffer \
     home-assistant-intents==2025.10.28 file-read-backwards==2.0.0 \
     --index-url https://mirrors.aliyun.com/pypi/simple/
-
 RUN uv pip install PyTurboJPEG --python /home/vscode/.local/ha-venv/bin/python3
-
 USER root
 # Копируем **весь ваш код** внутрь контейнера
 COPY . /workspaces/core

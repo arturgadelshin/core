@@ -7,6 +7,7 @@ from collections import OrderedDict
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from enum import Enum, auto
+import re
 import logging
 from pathlib import Path
 import time
@@ -1468,7 +1469,7 @@ class DefaultAgent(ConversationEntity):
 
         for trigger_id, trigger_details in enumerate(self._triggers_details):
             for sentence in trigger_details.sentences:
-                trigger_words = remove_punctuation(sentence).strip().lower().split()
+                trigger_words = remove_punctuation(re.sub(r'\{[^}]*\}', '', sentence)).strip().lower().split()
                 if not trigger_words:
                     continue
 

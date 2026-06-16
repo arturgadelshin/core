@@ -1114,13 +1114,10 @@ class PipelineRun:
                 daemon=True,
             ).start()
 
-            if not trigger_matched:
-                _LOGGER.debug("STT: no trigger match for '%s', aborting", stt_text[:80])
-                raise SpeechToTextError(
-                    code="stt-no-text-recognized", message=""
-                )
-
-            self._trigger_matched_text = stt_text
+            if trigger_matched:
+                self._trigger_matched_text = stt_text
+            else:
+                _LOGGER.debug("STT: no trigger match for '%s', continuing to intent", stt_text[:80])
         else:
             _stt_duration = time.monotonic() - _stt_start
             threading.Thread(
