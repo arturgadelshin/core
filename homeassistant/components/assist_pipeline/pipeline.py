@@ -556,7 +556,7 @@ class AudioSettings:
     before_command_speech_threshold: float = 0.5
     """Probability threshold for speech before voice command."""
 
-    speech_threshold: float = 0.5
+    speech_threshold: float = 0.4
     """Speech probability threshold for Silero VAD (0.0-1.0)."""
 
     vad_timeout_seconds: float = 30.0
@@ -568,7 +568,7 @@ class AudioSettings:
     vad_mode: str = "per_pipeline"
     """VAD session mode: 'singleton' (shared) or 'per_pipeline' (isolated)."""
 
-    trigger_timeout_seconds: float = 7.0
+    trigger_timeout_seconds: float = 5.0
     """Maximum seconds after speech start to listen for command before forced recognition."""
 
     enable_trigger_check: bool = True

@@ -102,7 +102,7 @@ class VoiceCommandSegmenter:
     before_command_speech_threshold: float = 0.2
     """Probability threshold for speech before voice command."""
 
-    in_command_speech_threshold: float = 0.5
+    in_command_speech_threshold: float = 0.4
     """Probability threshold for speech during voice command."""
 
     _speech_seconds_left: float = 0.0
@@ -266,7 +266,7 @@ class VoiceActivityTimeout:
     reset_seconds: float = 0.5
     """Seconds of speech before resetting timeout."""
 
-    speech_threshold: float = 0.5
+    speech_threshold: float = 0.4
     """Threshold for speech."""
 
     _silence_seconds_left: float = 0.0

@@ -224,7 +224,7 @@ async def websocket_run(
             auto_gain_dbfs=msg_input.get("auto_gain_dbfs", 0),
             volume_multiplier=msg_input.get("volume_multiplier", 1.0),
             is_vad_enabled=not msg_input.get("no_vad", False),
-            speech_threshold=msg_input.get("speech_threshold", 0.5),
+            speech_threshold=msg_input.get("speech_threshold", 0.4),
             vad_mode=msg_input.get("vad_mode", "singleton"),
             vad_timeout_seconds=msg_input.get("vad_timeout_seconds", 15.0),
         )

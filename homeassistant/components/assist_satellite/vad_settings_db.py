@@ -19,7 +19,7 @@ DB_FILENAME = "vad_settings.db"
 CONFIG_FILENAME = "conf_assist_pipeline.yaml"
 
 HARDCODED_DEFAULTS = {
-    "speech_threshold": 0.5,
+    "speech_threshold": 0.4,
     "before_command_speech_threshold": 0.5,
     "silence_seconds": 2.0,
     "command_seconds": 1.5,
@@ -52,7 +52,7 @@ class VadSettingsStore:
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS satellite_settings (
                     entity_id TEXT PRIMARY KEY,
-                    speech_threshold REAL DEFAULT 0.5,
+                    speech_threshold REAL DEFAULT 0.4,
                     before_command_speech_threshold REAL DEFAULT 0.5,
                     silence_seconds REAL DEFAULT 2.0,
                     command_seconds REAL DEFAULT 1.5,

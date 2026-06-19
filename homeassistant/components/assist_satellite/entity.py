@@ -145,7 +145,7 @@ class AssistSatelliteEntity(RestoreEntity):
     _pipeline_task: asyncio.Task | None = None
     _ask_question_future: asyncio.Future[str | None] | None = None
     _last_stt_audio_path: str | None = None
-    _speech_threshold: float = 0.5
+    _speech_threshold: float = 0.4
     _vad_timeout_seconds: float = 30.0
     _silence_seconds: float = 2.0
     _command_seconds: float = 2.0
