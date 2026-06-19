@@ -444,11 +444,10 @@ class DefaultAgent(ConversationEntity):
             response.async_set_speech(response_text)
 
         if response is None:
-            # Match intents
-            intent_result = await self.async_recognize_intent(user_input)
-            response = await self._async_process_intent_result(
-                intent_result, user_input
+            response = intent.IntentResponse(
+                language=user_input.language or self.hass.config.language
             )
+            response.async_set_speech("")
 
         speech: str = response.speech.get("plain", {}).get("speech", "")
         chat_log.async_add_assistant_content_without_tools(
@@ -495,6 +494,12 @@ class DefaultAgent(ConversationEntity):
                 result.unmatched_entities_list,
             )
             error_response_type, error_response_args = _get_unmatched_response(result)
+            if "name" in result.unmatched_entities:
+                return _make_error_result(
+                    language,
+                    intent.IntentResponseErrorCode.NO_VALID_TARGETS,
+                    "",
+                )
             return _make_error_result(
                 language,
                 intent.IntentResponseErrorCode.NO_VALID_TARGETS,
