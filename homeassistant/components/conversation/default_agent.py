@@ -1613,14 +1613,7 @@ class DefaultAgent(ConversationEntity):
             # Response was explicitly set to empty
             response_text = response_text or ""
         elif not response_text:
-            # Use translated acknowledgment for pipeline language
-            language = user_input.language or self.hass.config.language
-            translations = await translation.async_get_translations(
-                self.hass, language, DOMAIN, [DOMAIN]
-            )
-            response_text = translations.get(
-                f"component.{DOMAIN}.conversation.agent.done", "Done"
-            )
+            response_text = ""
 
         return response_text
 
