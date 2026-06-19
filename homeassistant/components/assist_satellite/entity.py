@@ -155,7 +155,7 @@ class AssistSatelliteEntity(RestoreEntity):
     _noise_suppression_level: int = 0
     _auto_gain_dbfs: int = 0
     _volume_multiplier: float = 1.0
-    _trigger_timeout_seconds: float = 7.0
+    _trigger_timeout_seconds: float = 5.0
     __assist_satellite_state = AssistSatelliteState.IDLE
 
     @final
@@ -224,7 +224,7 @@ class AssistSatelliteEntity(RestoreEntity):
             )
             self._auto_gain_dbfs = int(settings.get("auto_gain_dbfs", defaults["auto_gain_dbfs"]))
             self._volume_multiplier = float(settings.get("volume_multiplier", defaults.get("volume_multiplier", 1.0)))
-            self._trigger_timeout_seconds = float(settings.get("trigger_timeout_seconds", defaults.get("trigger_timeout_seconds", 7.0)))
+            self._trigger_timeout_seconds = float(settings.get("trigger_timeout_seconds", defaults.get("trigger_timeout_seconds", 5.0)))
             _LOGGER.debug("Loaded settings from DB for %s: vad_mode=%s", self.entity_id, self._vad_mode)
         else:
             self._speech_threshold = float(defaults["speech_threshold"])
@@ -237,7 +237,7 @@ class AssistSatelliteEntity(RestoreEntity):
             self._noise_suppression_level = int(defaults["noise_suppression_level"])
             self._auto_gain_dbfs = int(defaults["auto_gain_dbfs"])
             self._volume_multiplier = float(defaults.get("volume_multiplier", 1.0))
-            self._trigger_timeout_seconds = float(defaults.get("trigger_timeout_seconds", 7.0))
+            self._trigger_timeout_seconds = float(defaults.get("trigger_timeout_seconds", 5.0))
 
     @property
     def tts_options(self) -> dict[str, Any] | None:

@@ -29,7 +29,7 @@ HARDCODED_DEFAULTS = {
     "noise_suppression_level": 0,
     "auto_gain_dbfs": 0,
     "volume_multiplier": 1.0,
-    "trigger_timeout_seconds": 7.0,
+    "trigger_timeout_seconds": 5.0,
 }
 
 PARAM_NAMES = set(HARDCODED_DEFAULTS.keys())
@@ -72,7 +72,7 @@ class VadSettingsStore:
             except sqlite3.OperationalError:
                 pass
             try:
-                conn.execute("ALTER TABLE satellite_settings ADD COLUMN trigger_timeout_seconds REAL DEFAULT 7.0")
+                conn.execute("ALTER TABLE satellite_settings ADD COLUMN trigger_timeout_seconds REAL DEFAULT 5.0")
             except sqlite3.OperationalError:
                 pass
         _LOGGER.info("VAD settings DB initialized: %s", self._db_path)
