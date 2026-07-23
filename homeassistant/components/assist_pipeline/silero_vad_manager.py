@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import threading
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -40,8 +41,11 @@ def _find_jit_model_path() -> Path:
 class SileroVadStream:
     """Per-stream Silero VAD state using a shared torch model."""
 
-    def __init__(self, model: torch.jit.ScriptModule) -> None:
+    def __init__(
+        self, model: torch.jit.ScriptModule, lock: threading.Lock
+    ) -> None:
         self._model = model
+        self._lock = lock
 
     def process_chunk(self, audio_bytes: bytes, sample_rate: int = 16000) -> float:
         """Process a 32ms PCM audio chunk. Returns speech probability 0-1."""
@@ -50,8 +54,9 @@ class SileroVadStream:
         )
         audio_tensor = torch.from_numpy(audio_np).unsqueeze(0)
         sr_tensor = torch.tensor(sample_rate)
-        with torch.no_grad():
-            prob = self._model(audio_tensor, sr_tensor)
+        with self._lock:
+            with torch.no_grad():
+                prob = self._model(audio_tensor, sr_tensor)
         return float(prob.item())
 
     def reset(self) -> None:
@@ -64,10 +69,11 @@ class SileroVadSingleton:
 
     def __init__(self, model: torch.jit.ScriptModule) -> None:
         self._model = model
+        self._lock = threading.Lock()
 
     def create_stream(self) -> SileroVadStream:
         """Create a new per-stream VAD state."""
-        return SileroVadStream(self._model)
+        return SileroVadStream(self._model, self._lock)
 
 
 class SileroVadPerPipeline:
@@ -81,6 +87,7 @@ class SileroVadPerPipeline:
             model_path = _find_jit_model_path()
             self._model = torch.jit.load(str(model_path))
             self._model.eval()
+            torch.set_num_threads(1)
         return self._model
 
     def process_chunk(self, audio_bytes: bytes, sample_rate: int = 16000) -> float:
@@ -108,5 +115,6 @@ async def async_create_silero_singleton(hass: HomeAssistant) -> SileroVadSinglet
         lambda: torch.jit.load(str(model_path))
     )
     model.eval()
+    torch.set_num_threads(1)
     _LOGGER.debug("Silero VAD model loaded (singleton mode, torch JIT)")
     return SileroVadSingleton(model)

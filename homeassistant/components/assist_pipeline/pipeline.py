@@ -1765,7 +1765,9 @@ class PipelineRun:
             for dirty_chunk in chunk_samples(
                 dirty_samples, BYTES_PER_CHUNK, self.audio_chunking_buffer
             ):
-                yield self.audio_enhancer.enhance_chunk(dirty_chunk, timestamp_ms)
+                yield await self.audio_enhancer.enhance_chunk(
+                    dirty_chunk, timestamp_ms
+                )
                 timestamp_ms += MS_PER_CHUNK
 
 

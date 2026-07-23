@@ -1,5 +1,6 @@
 """Audio enhancement for Assist."""
 
+import asyncio
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 import logging
@@ -38,7 +39,9 @@ class AudioEnhancer(ABC):
         self.is_vad_enabled = is_vad_enabled
 
     @abstractmethod
-    def enhance_chunk(self, audio: bytes, timestamp_ms: int) -> EnhancedAudioChunk:
+    async def enhance_chunk(
+        self, audio: bytes, timestamp_ms: int
+    ) -> EnhancedAudioChunk:
         """Enhance chunk of PCM audio @ 16Khz with 16-bit mono samples."""
 
 
@@ -69,7 +72,9 @@ class SileroVadSpeexEnhancer(AudioEnhancer):
         self._audio_buffer = bytearray()
         self._last_probability: float | None = None
 
-    def enhance_chunk(self, audio: bytes, timestamp_ms: int) -> EnhancedAudioChunk:
+    async def enhance_chunk(
+        self, audio: bytes, timestamp_ms: int
+    ) -> EnhancedAudioChunk:
         """Enhance 10ms chunk of PCM audio @ 16Khz with 16-bit mono samples."""
         speech_probability: float | None = self._last_probability
 
@@ -83,7 +88,10 @@ class SileroVadSpeexEnhancer(AudioEnhancer):
             if len(self._audio_buffer) >= SILERO_BYTES_PER_CHUNK:
                 chunk_32ms = bytes(self._audio_buffer[:SILERO_BYTES_PER_CHUNK])
                 self._audio_buffer = self._audio_buffer[SILERO_BYTES_PER_CHUNK:]
-                speech_probability = self._silero_vad.process_chunk(chunk_32ms)
+                loop = asyncio.get_running_loop()
+                speech_probability = await loop.run_in_executor(
+                    None, self._silero_vad.process_chunk, chunk_32ms
+                )
                 self._last_probability = speech_probability
 
         return EnhancedAudioChunk(
