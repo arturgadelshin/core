@@ -24,7 +24,7 @@ services:
     ports:
       - "10301:10301"
     command: >
-      --model gigaam-v3-rnnt --uri tcp://0.0.0.0:10301 --device cpu --quantization int8
+      --model gigaam-v3-rnnt --uri tcp://0.0.0.0:10301 --device cpu
     environment:
       - TZ=Europe/Moscow
     volumes:

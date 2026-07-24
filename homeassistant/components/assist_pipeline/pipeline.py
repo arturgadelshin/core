@@ -656,7 +656,7 @@ class PipelineRun:
     """VAD/noise suppression/auto gain"""
 
     audio_chunking_buffer: AudioBuffer = field(
-        default_factory=lambda: AudioBuffer(BYTES_PER_CHUNK)
+        default_factory=lambda: AudioBuffer(max(BYTES_PER_CHUNK, SILERO_BYTES_PER_CHUNK))
     )
     """Buffer used when splitting audio into chunks for audio processing"""
 

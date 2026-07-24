@@ -90,6 +90,7 @@ class SileroVadSpeexEnhancer(AudioEnhancer):
 
         self._silero_vad = silero_vad
         self._audio_buffer = bytearray()
+        self._speex_leftover = bytearray()
         self._last_probability: float | None = None
 
     async def enhance_chunk(
@@ -104,13 +105,12 @@ class SileroVadSpeexEnhancer(AudioEnhancer):
             if len(audio) == BYTES_PER_CHUNK:
                 audio = self.audio_processor.Process10ms(audio).audio
             else:
+                self._speex_leftover.extend(audio)
                 _result = bytearray()
-                for i in range(0, len(audio), BYTES_PER_CHUNK):
-                    _sub = audio[i:i + BYTES_PER_CHUNK]
-                    if len(_sub) == BYTES_PER_CHUNK:
-                        _result.extend(self.audio_processor.Process10ms(_sub).audio)
-                    else:
-                        _result.extend(_sub)
+                while len(self._speex_leftover) >= BYTES_PER_CHUNK:
+                    _sub = bytes(self._speex_leftover[:BYTES_PER_CHUNK])
+                    del self._speex_leftover[:BYTES_PER_CHUNK]
+                    _result.extend(self.audio_processor.Process10ms(_sub).audio)
                 audio = bytes(_result)
 
         if self._silero_vad is not None and self.is_vad_enabled:
