@@ -173,7 +173,15 @@ class RuntimeConfig:
     safe_mode: bool = False
 
 
-class HassEventLoopPolicy(asyncio.DefaultEventLoopPolicy):
+try:
+    import uvloop
+
+    _EventLoopPolicyBase = uvloop.EventLoopPolicy  # type: ignore[misc,assignment]
+except ImportError:
+    _EventLoopPolicyBase = asyncio.DefaultEventLoopPolicy  # type: ignore[misc,assignment]
+
+
+class HassEventLoopPolicy(_EventLoopPolicyBase):  # type: ignore[misc]
     """Event loop policy for Home Assistant."""
 
     def __init__(self, debug: bool) -> None:
@@ -203,7 +211,10 @@ class HassEventLoopPolicy(asyncio.DefaultEventLoopPolicy):
         # bind the built-in time.monotonic directly as loop.time to avoid the
         # overhead of the additional method call since its the most called loop
         # method and its roughly 10%+ of all the call time in base_events.py
-        loop.time = monotonic  # type: ignore[method-assign]
+        try:
+            loop.time = monotonic  # type: ignore[method-assign]
+        except (AttributeError, TypeError):
+            pass  # uvloop C extension does not support attribute reassignment
         return loop
 
 
