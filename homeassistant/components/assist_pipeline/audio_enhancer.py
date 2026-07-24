@@ -2,8 +2,10 @@
 
 import asyncio
 from abc import ABC, abstractmethod
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 import logging
+import os
 
 from pyspeex_noise import AudioProcessor
 
@@ -11,6 +13,8 @@ from .const import BYTES_PER_CHUNK, SILERO_BYTES_PER_CHUNK
 from .silero_vad_manager import SileroVadPerPipeline, SileroVadStream
 
 _LOGGER = logging.getLogger(__name__)
+
+_VAD_EXECUTOR_MAX_WORKERS = int(os.environ.get("SILERO_VAD_THREADS", "4"))
 
 
 @dataclass(frozen=True, slots=True)
@@ -48,6 +52,22 @@ class AudioEnhancer(ABC):
 class SileroVadSpeexEnhancer(AudioEnhancer):
     """Audio enhancer using Silero VAD and Speex noise suppression."""
 
+    _vad_executor: ThreadPoolExecutor | None = None
+
+    @classmethod
+    def _get_vad_executor(cls) -> ThreadPoolExecutor:
+        """Return dedicated VAD thread pool (lazy init)."""
+        if cls._vad_executor is None:
+            cls._vad_executor = ThreadPoolExecutor(
+                max_workers=_VAD_EXECUTOR_MAX_WORKERS,
+                thread_name_prefix="silero-vad",
+            )
+            _LOGGER.info(
+                "Silero VAD executor started (%d workers)",
+                _VAD_EXECUTOR_MAX_WORKERS,
+            )
+        return cls._vad_executor
+
     def __init__(
         self,
         auto_gain: int,
@@ -78,10 +98,20 @@ class SileroVadSpeexEnhancer(AudioEnhancer):
         """Enhance 10ms chunk of PCM audio @ 16Khz with 16-bit mono samples."""
         speech_probability: float | None = self._last_probability
 
-        assert len(audio) == BYTES_PER_CHUNK
+        assert len(audio) in (BYTES_PER_CHUNK, SILERO_BYTES_PER_CHUNK), f"Unexpected chunk size: {len(audio)}"
 
         if self.audio_processor is not None:
-            audio = self.audio_processor.Process10ms(audio).audio
+            if len(audio) == BYTES_PER_CHUNK:
+                audio = self.audio_processor.Process10ms(audio).audio
+            else:
+                _result = bytearray()
+                for i in range(0, len(audio), BYTES_PER_CHUNK):
+                    _sub = audio[i:i + BYTES_PER_CHUNK]
+                    if len(_sub) == BYTES_PER_CHUNK:
+                        _result.extend(self.audio_processor.Process10ms(_sub).audio)
+                    else:
+                        _result.extend(_sub)
+                audio = bytes(_result)
 
         if self._silero_vad is not None and self.is_vad_enabled:
             self._audio_buffer.extend(audio)
@@ -90,7 +120,8 @@ class SileroVadSpeexEnhancer(AudioEnhancer):
                 self._audio_buffer = self._audio_buffer[SILERO_BYTES_PER_CHUNK:]
                 loop = asyncio.get_running_loop()
                 speech_probability = await loop.run_in_executor(
-                    None, self._silero_vad.process_chunk, chunk_32ms
+                    self._get_vad_executor(),
+                    self._silero_vad.process_chunk, chunk_32ms
                 )
                 self._last_probability = speech_probability
 

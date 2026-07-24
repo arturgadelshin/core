@@ -71,6 +71,8 @@ from .const import (
     SAMPLE_RATE,
     SAMPLE_WIDTH,
     SAMPLES_PER_CHUNK,
+    SILERO_BYTES_PER_CHUNK,
+    SILERO_MS_PER_CHUNK,
     WAKE_WORD_COOLDOWN,
 )
 from .error import (
@@ -1763,12 +1765,12 @@ class PipelineRun:
 
             # Split into chunks for audio enhancements/VAD
             for dirty_chunk in chunk_samples(
-                dirty_samples, BYTES_PER_CHUNK, self.audio_chunking_buffer
+                dirty_samples, SILERO_BYTES_PER_CHUNK, self.audio_chunking_buffer
             ):
                 yield await self.audio_enhancer.enhance_chunk(
                     dirty_chunk, timestamp_ms
                 )
-                timestamp_ms += MS_PER_CHUNK
+                timestamp_ms += SILERO_MS_PER_CHUNK
 
 
 def _multiply_volume(chunk: bytes, volume_multiplier: float) -> bytes:
