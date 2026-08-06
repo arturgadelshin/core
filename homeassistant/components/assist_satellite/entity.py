@@ -26,6 +26,9 @@ from homeassistant.components.assist_pipeline import (
     async_pipeline_from_audio_stream,
     vad,
 )
+from homeassistant.components.assist_pipeline.pipeline_trace import (
+    PipelineTraceLogger,
+)
 from homeassistant.components.media_player import async_process_play_media_url
 from homeassistant.core import Context, callback
 from homeassistant.exceptions import HomeAssistantError
@@ -652,6 +655,9 @@ class AssistSatelliteEntity(RestoreEntity):
                 self._set_state(AssistSatelliteState.IDLE)
         elif event.type is PipelineEventType.STT_START:
             self._set_state(AssistSatelliteState.LISTENING)
+            PipelineTraceLogger.trace_satellite(
+                self.entity_id, "->LISTENING", event="STT_START",
+            )
         elif event.type is PipelineEventType.STT_END:
             _LOGGER.debug("STT_END event: %s", event.data) 
             if event.data and "stt_output" in event.data:
@@ -662,18 +668,44 @@ class AssistSatelliteEntity(RestoreEntity):
                 and (not self._ask_question_future.done())
                 and event.data
             ):
-                self._ask_question_future.set_result(
-                    event.data.get("stt_output", {}).get("text")
+                text = event.data.get("stt_output", {}).get("text", "")
+                PipelineTraceLogger.trace_satellite(
+                    self.entity_id, "STT_END",
+                    text=f'"{text[:40]}"' if text else '""',
                 )
+                if text and text.strip():
+                    self._ask_question_future.set_result(text)
+                else:
+                    # User was silent — treat as "no answer" and abort before intent/TTS
+                    PipelineTraceLogger.trace_satellite(
+                        self.entity_id, "ASK_QUESTION",
+                        result="empty", action="abort",
+                    )
+                    self._ask_question_future.set_result(None)
+                    self._abort_pipeline()
         elif event.type is PipelineEventType.INTENT_START:
             self._set_state(AssistSatelliteState.PROCESSING)
+            PipelineTraceLogger.trace_satellite(
+                self.entity_id, "->PROCESSING", event="INTENT_START",
+            )
         elif event.type is PipelineEventType.TTS_START:
             # Wait until tts_response_finished is called to return to waiting state
             self._run_has_tts = True
             self._set_state(AssistSatelliteState.RESPONDING)
+            PipelineTraceLogger.trace_satellite(
+                self.entity_id, "->RESPONDING", event="TTS_START",
+            )
         elif event.type is PipelineEventType.RUN_END:
             if not self._run_has_tts:
                 self._set_state(AssistSatelliteState.IDLE)
+                PipelineTraceLogger.trace_satellite(
+                    self.entity_id, "->IDLE", event="RUN_END",
+                )
+            else:
+                PipelineTraceLogger.trace_satellite(
+                    self.entity_id, "RUN_END",
+                    note="waiting_for_tts_finished",
+                )
 
             if (self._ask_question_future is not None) and (
                 not self._ask_question_future.done()

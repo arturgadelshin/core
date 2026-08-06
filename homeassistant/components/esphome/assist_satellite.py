@@ -12,6 +12,7 @@ import json
 import logging
 from pathlib import Path
 import socket
+import time
 from typing import Any, cast
 import wave
 
@@ -35,6 +36,9 @@ from homeassistant.components.assist_pipeline import (
     PipelineEvent,
     PipelineEventType,
     PipelineStage,
+)
+from homeassistant.components.assist_pipeline.pipeline_trace import (
+    PipelineTraceLogger,
 )
 from homeassistant.components.http import StaticPathConfig
 from homeassistant.components.intent import (
@@ -586,6 +590,13 @@ class EsphomeAssistSatellite(
             start_stage,
             end_stage,
         )
+        PipelineTraceLogger.trace_satellite(
+            self.entity_id, "ESPHOME_START",
+            wake_word=wake_word_phrase or "none",
+            noise=audio_settings.noise_suppression_level,
+            auto_gain=audio_settings.auto_gain,
+            vol=audio_settings.volume_multiplier,
+        )
         self._pipeline_task = self.config_entry.async_create_background_task(
             self.hass,
             self.async_accept_pipeline_from_satellite(
@@ -608,6 +619,10 @@ class EsphomeAssistSatellite(
 
     async def handle_pipeline_stop(self, abort: bool) -> None:
         """Handle request for pipeline to stop."""
+        PipelineTraceLogger.trace_satellite(
+            self.entity_id, "ESPHOME_STOP",
+            reason="abort" if abort else "stop",
+        )
         if abort:
             self._abort_pipeline()
         else:
@@ -617,6 +632,9 @@ class EsphomeAssistSatellite(
         """Handle when pipeline has finished running."""
         self._stop_udp_server()
         self._active_pipeline_index = 0
+        PipelineTraceLogger.trace_satellite(
+            self.entity_id, "ESPHOME_DONE",
+        )
         _LOGGER.debug("Pipeline finished")
 
     def handle_timer_event(
@@ -717,10 +735,16 @@ class EsphomeAssistSatellite(
 
                 _LOGGER.debug("Streaming %s audio samples", wav_file.getnframes())
 
+                _tts_total_samples = 0
+                _tts_start = time.monotonic()
                 while self._is_running:
                     chunk = wav_file.readframes(samples_per_chunk)
                     if not chunk:
                         break
+
+                    _tts_total_samples += len(chunk) // (
+                        sample_width * sample_channels
+                    )
 
                     if self._udp_server is not None:
                         self._udp_server.send_audio_bytes(chunk)
@@ -734,6 +758,14 @@ class EsphomeAssistSatellite(
                     samples_in_chunk = len(chunk) // (sample_width * sample_channels)
                     seconds_in_chunk = samples_in_chunk / sample_rate
                     await asyncio.sleep(seconds_in_chunk * 0.9)
+
+                _tts_stream_dur = time.monotonic() - _tts_start
+                PipelineTraceLogger.trace_satellite(
+                    self.entity_id, "ESPHOME_TTS",
+                    samples=_tts_total_samples,
+                    dur=f"{_tts_stream_dur:.2f}s",
+                    total_frames=wav_file.getnframes(),
+                )
         except asyncio.CancelledError:
             return  # Don't trigger state change
         finally:
@@ -749,6 +781,7 @@ class EsphomeAssistSatellite(
         """Yield audio chunks from the queue until None."""
         _chunk_idx = 0
         _debug_audio = bytearray()
+        _stream_start = time.monotonic()
         while True:
             chunk = await self._audio_queue.get()
             if not chunk:
@@ -758,21 +791,40 @@ class EsphomeAssistSatellite(
             _debug_audio.extend(chunk)
             if _chunk_idx == 1:
                 _LOGGER.warning("ESPHome audio stream started, chunk_size=%d", len(chunk))
+                PipelineTraceLogger.trace_satellite(
+                    self.entity_id, "ESPHOME_AUDIO",
+                    first_chunk=f"{len(chunk)}b",
+                )
 
             yield chunk
 
+        _stream_dur = time.monotonic() - _stream_start
+        _wav_path = None
         if _debug_audio:
             try:
-                import wave, struct
-                wav_path = f"/config/debug_audio_{int(time.monotonic())}.wav"
-                with wave.open(wav_path, "wb") as wf:
+                import wave as _wave_mod
+                _wav_path = f"/config/debug_audio_{int(time.monotonic())}.wav"
+                with _wave_mod.open(_wav_path, "wb") as wf:
                     wf.setnchannels(1)
                     wf.setsampwidth(2)
                     wf.setframerate(16000)
                     wf.writeframes(bytes(_debug_audio))
-                _LOGGER.warning("Debug WAV saved: %s (%d bytes, %.1fs)", wav_path, len(_debug_audio), len(_debug_audio) / 32000.0)
+                _LOGGER.warning(
+                    "Debug WAV saved: %s (%d bytes, %.1fs)",
+                    _wav_path,
+                    len(_debug_audio),
+                    len(_debug_audio) / 32000.0,
+                )
             except Exception as e:
                 _LOGGER.warning("Failed to save debug WAV: %s", e)
+
+        PipelineTraceLogger.trace_satellite(
+            self.entity_id, "ESPHOME_AUDIO_END",
+            chunks=_chunk_idx,
+            bytes=len(_debug_audio),
+            dur=f"{_stream_dur:.2f}s",
+            wav=_wav_path or "none",
+        )
 
     def _stop_pipeline(self) -> None:
         """Request pipeline to be stopped by ending the audio stream and continue processing."""

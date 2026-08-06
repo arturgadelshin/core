@@ -93,6 +93,7 @@ from .silero_vad_manager import (
 )
 from .vad import AudioBuffer, VoiceActivityTimeout, VoiceCommandSegmenter, chunk_samples
 from .recognition_log import RecognitionLogger
+from .pipeline_trace import PipelineTraceLogger
 
 if TYPE_CHECKING:
     from hassil.recognize import RecognizeResult
@@ -1073,6 +1074,8 @@ class PipelineRun:
                     before_command_timeout_seconds=self.audio_settings.before_command_timeout_seconds,
                 )
 
+            PipelineTraceLogger.trace(self.id, "STT_BATCH", engine=engine)
+
             result = await self.stt_provider.async_process_audio_stream(
                 metadata,
                 self._speech_to_text_stream(audio_stream=stream, stt_vad=stt_vad),
@@ -1094,14 +1097,32 @@ class PipelineRun:
         _LOGGER.debug("speech-to-text result %s", result)
 
         stt_text = result.text
+        _stt_duration = time.monotonic() - _stt_start
+
+        PipelineTraceLogger.trace(
+            self.id, "STT_RESULT",
+            text=f'"{stt_text[:80]}"' if stt_text else '""',
+            stt_dur=f"{_stt_duration:.2f}s",
+        )
 
         if result.result != stt.SpeechResultState.SUCCESS:
+            PipelineTraceLogger.trace(
+                self.id, "STT_ERROR",
+                code="stt-failed", state=str(result.result),
+            )
             raise SpeechToTextError(
                 code="stt-stream-failed",
                 message="speech-to-text failed",
             )
 
         if not stt_text:
+            PipelineTraceLogger.trace(
+                self.id, "STT_ERROR",
+                code="stt-no-text-recognized",
+            )
+            _LOGGER.warning(
+                "STT no text recognized (satellite=%s)", self._satellite_id
+            )
             raise SpeechToTextError(
                 code="stt-no-text-recognized", message=""
             )
@@ -1119,7 +1140,10 @@ class PipelineRun:
             if trigger_matched:
                 self._trigger_matched_text = stt_text
             else:
-                _LOGGER.debug("STT: no trigger match for '%s', continuing to intent", stt_text[:80])
+                _LOGGER.warning(
+                    "STT: no trigger match for '%s' (satellite=%s), pipeline will abort",
+                    stt_text[:80], self._satellite_id,
+                )
         else:
             _stt_duration = time.monotonic() - _stt_start
             threading.Thread(
@@ -1167,8 +1191,18 @@ class PipelineRun:
                 agent_id=agent_id,
             )
             result = agent._keyword_match_triggers(user_input)
-            _LOGGER.debug("STT trigger check: text='%s' matched=%s", text[:80], result is not None)
-            return result is not None
+            _matched = result is not None
+            PipelineTraceLogger.trace(
+                self.id, "TRIGGER",
+                matched=str(_matched),
+                text=f'"{text[:60]}"',
+            )
+            if not _matched:
+                _LOGGER.warning(
+                    "STT trigger not matched (satellite=%s): '%s'",
+                    self._satellite_id, text[:80],
+                )
+            return _matched
         except Exception as ex:
             _LOGGER.debug("STT trigger check error: %s", ex)
         return False
@@ -1192,6 +1226,25 @@ class PipelineRun:
             if stt_vad is not None:
                 chunk_seconds = (len(chunk.audio) // sample_width) / sample_rate
                 if not stt_vad.process(chunk_seconds, chunk.speech_probability):
+                    _vad_reason = "silence_finish"
+                    if stt_vad.timed_out:
+                        _vad_reason = "timeout"
+                    if not sent_vad_start:
+                        _vad_reason = (
+                            "before_command_timeout"
+                            if stt_vad.timed_out
+                            else "no_speech"
+                        )
+                    _last_prob = chunk.speech_probability
+                    _prob_str = (
+                        f"{_last_prob:.3f}"
+                        if _last_prob is not None
+                        else "None"
+                    )
+                    PipelineTraceLogger.trace(
+                        self.id, "VAD_END",
+                        reason=_vad_reason, last_prob=_prob_str,
+                    )
                     self.process_event(
                         PipelineEvent(
                             PipelineEventType.STT_VAD_END,
@@ -1209,10 +1262,25 @@ class PipelineRun:
                     )
                     sent_vad_start = True
                     command_start_time = time.monotonic()
+                    _prob_str = (
+                        f"{chunk.speech_probability:.2f}"
+                        if chunk.speech_probability is not None
+                        else "None"
+                    )
+                    PipelineTraceLogger.trace(
+                        self.id, "VAD_START",
+                        event="COMMAND_START", prob=_prob_str,
+                    )
 
             if command_start_time is not None and trigger_timeout is not None:
                 if time.monotonic() - command_start_time >= trigger_timeout:
                     _LOGGER.debug("Trigger timeout (%.1fs) reached, stopping audio", trigger_timeout)
+                    PipelineTraceLogger.trace(
+                        self.id, "VAD_END",
+                        reason="trigger_timeout",
+                        elapsed=f"{time.monotonic() - command_start_time:.1f}s",
+                        limit=f"{trigger_timeout:.1f}s",
+                    )
                     break
 
             yield chunk.audio
@@ -1482,6 +1550,14 @@ class PipelineRun:
                     )
                     
                     if speech == "Обращение не распознано":
+                        PipelineTraceLogger.trace(
+                            self.id, "INTENT_BLANKED",
+                            original='"Обращение не распознано"', new='""',
+                        )
+                        _LOGGER.warning(
+                            "Intent returned 'Обращение не распознано' — blanked to empty (satellite=%s)",
+                            self._satellite_id,
+                        )
                         speech = ""
 
                     if tts_input_stream and self._streamed_response_text:
@@ -1502,8 +1578,11 @@ class PipelineRun:
 
         except Exception as src_error:
             _LOGGER.exception("Unexpected error during intent recognition")
-            # Вместо выброса IntentRecognitionError - возвращаем пустую строку и флаг
-            speech = ""  # или "Извините, произошла ошибка" на ваш выбор
+            PipelineTraceLogger.trace(
+                self.id, "INTENT_EXCEPTION",
+                error=str(src_error)[:100],
+            )
+            speech = ""
             all_targets_in_satellite_area = False
             return (speech, all_targets_in_satellite_area)
 
@@ -1517,6 +1596,15 @@ class PipelineRun:
                     "intent_output": conversation_result.as_dict(),
                 },
             )
+        )
+
+        _intent_name = ""
+        if conversation_result.response and conversation_result.response.intent:
+            _intent_name = conversation_result.response.intent.name
+        PipelineTraceLogger.trace(
+            self.id, "INTENT_END",
+            speech=f'"{speech[:60]}"' if speech else '""',
+            intent=_intent_name or "None",
         )
 
         if conversation_result.continue_conversation:
@@ -1866,6 +1954,16 @@ class PipelineInput:
             device_id=self.device_id,
             satellite_id=self.satellite_id,
         )
+        PipelineTraceLogger.trace_start(
+            self.run.id,
+            self.satellite_id,
+            self.run.pipeline.name,
+            self.run.pipeline.stt_engine,
+            self.run.pipeline.tts_engine,
+            self.run.start_stage.value,
+            self.run.end_stage.value,
+            self.run.audio_settings,
+        )
         current_stage: PipelineStage | None = self.run.start_stage
         stt_audio_buffer: list[EnhancedAudioChunk] = []
         stt_processed_stream: AsyncIterable[EnhancedAudioChunk] | None = None
@@ -1957,9 +2055,29 @@ class PipelineInput:
                         self.conversation_extra_system_prompt,
                     )
                     if all_targets_in_satellite_area or tts_input.strip():
+                        if all_targets_in_satellite_area:
+                            PipelineTraceLogger.trace(
+                                self.run.id, "TTS_DECISION",
+                                decision="acknowledge",
+                                reason="all_targets_in_satellite_area",
+                            )
+                        else:
+                            PipelineTraceLogger.trace(
+                                self.run.id, "TTS_DECISION",
+                                decision="produce",
+                                reason="speech_not_empty",
+                            )
                         current_stage = PipelineStage.TTS
                     else:
-                        # Skip TTS
+                        PipelineTraceLogger.trace(
+                            self.run.id, "TTS_DECISION",
+                            decision="skip",
+                            reason="empty_speech",
+                        )
+                        _LOGGER.warning(
+                            "TTS skipped — empty speech (satellite=%s)",
+                            self.satellite_id,
+                        )
                         current_stage = PipelineStage.END
 
                 if self.run.end_stage != PipelineStage.INTENT:
@@ -1975,6 +2093,10 @@ class PipelineInput:
                             await self.run.text_to_speech(tts_input)
 
         except PipelineError as err:
+            PipelineTraceLogger.trace(
+                self.run.id, "PIPELINE_ERROR",
+                code=err.code, message=err.message[:80],
+            )
             self.run.process_event(
                 PipelineEvent(
                     PipelineEventType.ERROR,
@@ -1984,6 +2106,12 @@ class PipelineInput:
         finally:
             # Always end the run since it needs to shut down the debug recording
             # thread, etc.
+            PipelineTraceLogger.trace_end(
+                self.run.id,
+                final_stage=(
+                    current_stage.value if current_stage else "aborted"
+                ),
+            )
             await self.run.end()
 
     async def validate(self) -> None:
