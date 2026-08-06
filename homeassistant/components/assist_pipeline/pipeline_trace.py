@@ -2,6 +2,9 @@
 
 Writes detailed pipeline execution traces to a text file for debugging
 wake-word -> listening -> processing -> responding chain issues.
+
+Uses a single background worker thread with a queue to avoid creating
+threads on every trace call.
 """
 
 import gzip
@@ -10,11 +13,13 @@ import threading
 import time
 from datetime import datetime
 from pathlib import Path
+from queue import Queue
 
 _LOG_DIR = "/config/assist_pipeline"
 _LOG_FILE = os.path.join(_LOG_DIR, "pipeline_trace.log")
 _MAX_SIZE = 100 * 1024 * 1024
 _MAX_ARCHIVES = 3
+_FLUSH_INTERVAL = 0.5
 
 
 class PipelineTraceLogger:
@@ -24,9 +29,52 @@ class PipelineTraceLogger:
     and ending with RUN_END, with elapsed timestamps relative to run start.
     """
 
-    _lock = threading.Lock()
     _timings: dict[str, dict] = {}
     _sat_to_run: dict[str, str] = {}
+
+    _queue: Queue[str | None] | None = None
+    _worker: threading.Thread | None = None
+    _file = None
+
+    @classmethod
+    def _ensure_worker(cls) -> None:
+        """Start the background worker thread if not running."""
+        if cls._worker is not None and cls._worker.is_alive():
+            return
+        cls._queue = Queue()
+        cls._worker = threading.Thread(
+            target=cls._worker_loop, daemon=True, name="pipeline-trace"
+        )
+        cls._worker.start()
+
+    @classmethod
+    def _worker_loop(cls) -> None:
+        """Background worker: drains queue and writes to file."""
+        assert cls._queue is not None
+        os.makedirs(_LOG_DIR, exist_ok=True)
+        buf: list[str] = []
+        while True:
+            try:
+                item = cls._queue.get(timeout=_FLUSH_INTERVAL)
+            except Exception:
+                item = None
+
+            if item is not None:
+                buf.append(item)
+
+            if buf and (item is None or cls._queue.empty()):
+                cls._flush(buf)
+                buf.clear()
+
+    @classmethod
+    def _flush(cls, lines: list[str]) -> None:
+        """Write buffered lines to file and rotate if needed."""
+        try:
+            with open(_LOG_FILE, "a", encoding="utf-8") as f:
+                f.writelines(lines)
+        except Exception:
+            pass
+        cls._rotate_if_needed()
 
     @staticmethod
     def trace_start(
@@ -64,7 +112,7 @@ class PipelineTraceLogger:
             f"ns={a.noise_suppression_level} ag={a.auto_gain_dbfs} "
             f"vol={a.volume_multiplier} vad={a.vad_mode}\n"
         )
-        PipelineTraceLogger._write(block)
+        PipelineTraceLogger._enqueue(block)
 
     @staticmethod
     def trace(run_id: str, stage: str, **kwargs) -> None:
@@ -80,7 +128,7 @@ class PipelineTraceLogger:
         for k, v in kwargs.items():
             parts.append(f"{k}={v}")
         parts.append(f" +{elapsed:.2f}s")
-        PipelineTraceLogger._write(" ".join(parts) + "\n")
+        PipelineTraceLogger._enqueue(" ".join(parts) + "\n")
 
     @staticmethod
     def trace_end(
@@ -103,7 +151,7 @@ class PipelineTraceLogger:
             f"[{now}] RUN_END       "
             f"total={dur_str} final={final_stage or '?'}\n"
         )
-        PipelineTraceLogger._write(line)
+        PipelineTraceLogger._enqueue(line)
 
     @staticmethod
     def trace_satellite(
@@ -114,22 +162,12 @@ class PipelineTraceLogger:
         if run_id:
             PipelineTraceLogger.trace(run_id, stage, **kwargs)
 
-    @staticmethod
-    def _write(text: str) -> None:
-        """Write text to the trace log via a daemon thread."""
-
-        def _do_write() -> None:
-            try:
-                PipelineTraceLogger._rotate_if_needed()
-                with PipelineTraceLogger._lock:
-                    os.makedirs(_LOG_DIR, exist_ok=True)
-                    with open(_LOG_FILE, "a", encoding="utf-8") as f:
-                        f.write(text)
-            except Exception:
-                pass
-
-        t = threading.Thread(target=_do_write, daemon=True)
-        t.start()
+    @classmethod
+    def _enqueue(cls, text: str) -> None:
+        """Put text into the write queue (non-blocking)."""
+        cls._ensure_worker()
+        assert cls._queue is not None
+        cls._queue.put_nowait(text)
 
     @staticmethod
     def _rotate_if_needed() -> None:
@@ -142,28 +180,22 @@ class PipelineTraceLogger:
         except OSError:
             return
 
-        with PipelineTraceLogger._lock:
-            try:
-                if not os.path.exists(_LOG_FILE):
-                    return
-                if os.path.getsize(_LOG_FILE) < _MAX_SIZE:
-                    return
+        try:
+            archive_name = (
+                f"pipeline_trace_"
+                f"{datetime.now().strftime('%Y-%m-%d_%H-%M-%S')}.txt.gz"
+            )
+            archive_path = os.path.join(_LOG_DIR, archive_name)
 
-                archive_name = (
-                    f"pipeline_trace_"
-                    f"{datetime.now().strftime('%Y-%m-%d_%H-%M-%S')}.txt.gz"
-                )
-                archive_path = os.path.join(_LOG_DIR, archive_name)
+            with open(_LOG_FILE, "rb") as f_in:
+                with gzip.open(archive_path, "wb") as f_out:
+                    f_out.writelines(f_in)
 
-                with open(_LOG_FILE, "rb") as f_in:
-                    with gzip.open(archive_path, "wb") as f_out:
-                        f_out.writelines(f_in)
+            open(_LOG_FILE, "w").close()
 
-                open(_LOG_FILE, "w").close()
-
-                PipelineTraceLogger._cleanup_old_archives()
-            except Exception:
-                pass
+            PipelineTraceLogger._cleanup_old_archives()
+        except Exception:
+            pass
 
     @staticmethod
     def _cleanup_old_archives() -> None:
