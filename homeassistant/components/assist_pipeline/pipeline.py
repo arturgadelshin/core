@@ -1219,9 +1219,27 @@ class PipelineRun:
         _chunk_count = 0
         command_start_time = None
         trigger_timeout = self.audio_settings.trigger_timeout_seconds
+        _wall_start = time.monotonic()
+        _wall_limit = self.audio_settings.vad_timeout_seconds
+        _no_audio_logged = False
         async for chunk in audio_stream:
             self._capture_chunk(chunk.audio)
             _chunk_count += 1
+
+            _wall_elapsed = time.monotonic() - _wall_start
+            if _wall_elapsed > _wall_limit:
+                _LOGGER.warning(
+                    "WALL_CLOCK_TIMEOUT: %.1fs elapsed (limit=%.1fs), chunks=%d (satellite=%s)",
+                    _wall_elapsed, _wall_limit, _chunk_count, self._satellite_id,
+                )
+                PipelineTraceLogger.trace(
+                    self.id, "VAD_END",
+                    reason="wall_clock_timeout",
+                    elapsed=f"{_wall_elapsed:.1f}s",
+                    limit=f"{_wall_limit:.1f}s",
+                    chunks=_chunk_count,
+                )
+                break
 
             if stt_vad is not None:
                 chunk_seconds = (len(chunk.audio) // sample_width) / sample_rate
