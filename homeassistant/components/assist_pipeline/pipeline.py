@@ -1130,12 +1130,10 @@ class PipelineRun:
         if self.audio_settings.enable_trigger_check:
             trigger_matched = self._check_trigger(stt_text)
             _stt_duration = time.monotonic() - _stt_start
-            threading.Thread(
-                target=RecognitionLogger.log,
-                args=(self._satellite_id, "vad",
-                      stt_text, trigger_matched, _stt_duration),
-                daemon=True,
-            ).start()
+            RecognitionLogger.log(
+                self._satellite_id, "vad",
+                stt_text, trigger_matched, _stt_duration,
+            )
 
             if trigger_matched:
                 self._trigger_matched_text = stt_text
@@ -1146,12 +1144,10 @@ class PipelineRun:
                 )
         else:
             _stt_duration = time.monotonic() - _stt_start
-            threading.Thread(
-                target=RecognitionLogger.log,
-                args=(self._satellite_id, "ask_question",
-                      stt_text, True, _stt_duration),
-                daemon=True,
-            ).start()
+            RecognitionLogger.log(
+                self._satellite_id, "ask_question",
+                stt_text, True, _stt_duration,
+            )
 
         self.process_event(
             PipelineEvent(
