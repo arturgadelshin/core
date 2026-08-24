@@ -16,8 +16,6 @@
 ## Быстрая сборка
 
 ```bash
-cd E:\Project_OpenCode\Core\core
-
 docker build -f Dockerfile.my_dev -t ha-custom .
 ```
 
@@ -33,7 +31,6 @@ docker build -f Dockerfile.my_dev -t ha-custom .
 ## Запуск через docker-compose
 
 ```bash
-cd E:\Project_OpenCode\Core\core
 docker compose up -d
 ```
 
@@ -188,8 +185,36 @@ for row in conn.execute('SELECT * FROM satellite_settings'):
 
 ---
 
+## Ключевые решения
+
+Архив технических решений из истории разработки (сессия 01–08.06.2026):
+
+| Решение | Причина |
+|---------|---------|
+| torch JIT вместо ONNX | ONNX через onnxruntime всегда возвращает ~0.0005 |
+| per_pipeline по умолчанию | Изоляция pipeline, модель stateless — разницы нет |
+| 512 сэмплов (не 480) | Silero VAD не поддерживает 480, минимум 512 |
+| SQLite вместо RestoreEntity | Надёжная персистентность, ALTER TABLE миграции, централизованное хранилище |
+| Batch VAD + trigger check | Проще и надёжнее streaming; RTFx=10-13x достаточно |
+| `_check_trigger()` после batch | Keyword subsequence matching на финальном тексте — точнее чем на partial |
+| RNN-T лучше CTC | CTC даёт "вызоровлеи" вместо "вызови лифт" |
+| RNNoise убран | Ресемплинг 16→48→16kHz искажает аудио, RTFx падает |
+| Batch STT (без partial) | partial results не используются, batch экономит CPU |
+| `enable_trigger_check=False` для ask_question | ask_question ожидает любой ответ, не только trigger |
+
+## Критический контекст
+
+- **ONNX сломана:** `silero_vad.onnx` через onnxruntime → всегда ~0.0005
+- **torch JIT работает:** `silero_vad.jit` → корректные вероятности
+- **ESPHome аудио тихое:** peak ~100-600 из 32767
+- **ESPHome чанки:** 1024 байта (32ms). Pipeline разбивает на 320 байт (10ms). Enhancer буферизует обратно.
+- **GigaAM batch RTFx:** 10-13x (real-time factor, чем выше тем лучше)
+- **HA логирует WARNING+:** `_LOGGER.debug` невидим в логах, `_LOGGER.warning` виден
+- **`__pycache__`** нужно очищать перед рестартом
+- **Silero VAD prob высокая после речи:** prob=0.98-1.00 для шума/эха → silence_seconds может не сработать
+
+---
+
 ## Документация
 
-- [SESSION.md](SESSION.md) — полная история сессии разработки
 - [SILERO_VAD.md](SILERO_VAD.md) — документация Silero VAD (архитектура, параметры, troubleshooting)
-- [PLAN.md](PLAN.md) — план keyword subsequence matching
