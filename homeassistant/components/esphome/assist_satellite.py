@@ -16,6 +16,8 @@ import time
 from typing import Any, cast
 import wave
 
+from aioesphomeapi.core import TimeoutAPIError
+
 from aioesphomeapi import (
     MediaPlayerFormatPurpose,
     MediaPlayerSupportedFormat,
@@ -249,12 +251,22 @@ class EsphomeAssistSatellite(
         if wake_words:
             _LOGGER.debug("Found custom wake words: %s", sorted(wake_words.keys()))
 
-        try:
-            config = await self.cli.get_voice_assistant_configuration(
-                _CONFIG_TIMEOUT_SEC,
-                external_wake_words=list(wake_words.values()),
-            )
-        except TimeoutError:
+        config = None
+        for attempt in (1, 2):
+            try:
+                config = await self.cli.get_voice_assistant_configuration(
+                    _CONFIG_TIMEOUT_SEC,
+                    external_wake_words=list(wake_words.values()),
+                )
+                break
+            except (TimeoutError, TimeoutAPIError):
+                _LOGGER.warning(
+                    "Timeout waiting for satellite configuration (attempt %d/2)",
+                    attempt,
+                )
+                if attempt == 1:
+                    await asyncio.sleep(2.0)
+        if config is None:
             # Placeholder config will be used
             return
 
