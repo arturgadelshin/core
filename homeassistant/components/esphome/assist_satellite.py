@@ -780,7 +780,7 @@ class EsphomeAssistSatellite(
     async def _wrap_audio_stream(self) -> AsyncIterable[bytes]:
         """Yield audio chunks from the queue until None."""
         _chunk_idx = 0
-        _debug_audio = bytearray()
+        _audio_bytes = 0
         _stream_start = time.monotonic()
         while True:
             chunk = await self._audio_queue.get()
@@ -788,7 +788,7 @@ class EsphomeAssistSatellite(
                 break
 
             _chunk_idx += 1
-            _debug_audio.extend(chunk)
+            _audio_bytes += len(chunk)
             if _chunk_idx == 1:
                 _LOGGER.warning("ESPHome audio stream started, chunk_size=%d", len(chunk))
                 PipelineTraceLogger.trace_satellite(
@@ -799,31 +799,12 @@ class EsphomeAssistSatellite(
             yield chunk
 
         _stream_dur = time.monotonic() - _stream_start
-        _wav_path = None
-        if _debug_audio:
-            try:
-                import wave as _wave_mod
-                _wav_path = f"/config/debug_audio_{int(time.monotonic())}.wav"
-                with _wave_mod.open(_wav_path, "wb") as wf:
-                    wf.setnchannels(1)
-                    wf.setsampwidth(2)
-                    wf.setframerate(16000)
-                    wf.writeframes(bytes(_debug_audio))
-                _LOGGER.warning(
-                    "Debug WAV saved: %s (%d bytes, %.1fs)",
-                    _wav_path,
-                    len(_debug_audio),
-                    len(_debug_audio) / 32000.0,
-                )
-            except Exception as e:
-                _LOGGER.warning("Failed to save debug WAV: %s", e)
 
         PipelineTraceLogger.trace_satellite(
             self.entity_id, "ESPHOME_AUDIO_END",
             chunks=_chunk_idx,
-            bytes=len(_debug_audio),
+            bytes=_audio_bytes,
             dur=f"{_stream_dur:.2f}s",
-            wav=_wav_path or "none",
         )
 
     def _stop_pipeline(self) -> None:
