@@ -9,6 +9,7 @@ from dataclasses import dataclass, field
 from functools import partial
 import logging
 from operator import delitem
+import re
 from typing import TYPE_CHECKING, Any, Final, TypedDict, cast
 
 from aioesphomeapi import (
@@ -107,6 +108,10 @@ def build_device_unique_id(mac: str, entity_info: EntityInfo) -> str:
     entities move between devices.
     """
     base_unique_id = build_unique_id(mac, entity_info)
+
+    if not entity_info.object_id and entity_info.name:
+        name_slug = re.sub(r"[^a-z0-9]", "_", entity_info.name.lower())
+        base_unique_id = f"{base_unique_id}{name_slug}"
 
     # If entity belongs to a sub-device, append @device_id
     if entity_info.device_id:
