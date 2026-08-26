@@ -1154,13 +1154,12 @@ ARG_TYPE_METADATA = {
 }
 
 
-@callback
-def execute_service(
+async def execute_service(
     entry_data: RuntimeEntryData, service: UserService, call: ServiceCall
 ) -> None:
     """Execute a service on a node."""
     try:
-        entry_data.client.execute_service(service, call.data)
+        await entry_data.client.execute_service(service, call.data)
     except APIConnectionError as err:
         raise HomeAssistantError(
             translation_domain=DOMAIN,
