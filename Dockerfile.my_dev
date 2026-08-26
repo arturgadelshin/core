@@ -93,6 +93,9 @@ RUN SILERO_MODEL=$(find /home/vscode/.local/ha-venv -name "silero_vad.jit" -type
 # Устанавливаем Home Assistant в режиме разработки
 RUN uv pip install -e .
 
+# Финальная сверка зависимостей (защита от кэша и runtime-переустановок)
+RUN uv pip install -r requirements.txt -c package_constraints_fix.txt
+
 # Переключаемся на root, чтобы иметь доступ к /config
 USER root
 WORKDIR /config
