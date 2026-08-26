@@ -215,6 +215,43 @@ for row in conn.execute('SELECT * FROM satellite_settings'):
 
 ---
 
+## Доработки: интеграция esphome + aioesphomeapi 46.2.0 (август 2026)
+
+### Коммиты (всё в `origin/dev`, HEAD `03c33fbd`)
+
+| Коммит | Файл | Суть |
+|--------|------|------|
+| `7ecb579b` | `esphome/assist_satellite.py` | `except (TimeoutError, TimeoutAPIError)` + retry 2с в `_update_satellite_config` |
+| `885c8bd8`, `006e302c` | `esphome/entry_data.py` | `build_device_unique_id`: при пустом `object_id` от прошивки — fallback-слаг из name (`re.sub(r"[^a-z0-9_-]", "_", name.lower())`, дефисы сохранены под legacy-uid) |
+| `44e47275` | `esphome/manager.py` | `execute_service` → `async def` + `await entry_data.client.execute_service(...)` (в aioesphomeapi 46.x — корутина) |
+| `f4de690e`, `99de675f`, `675e315c`, `6e2d8a79`, `6c5090bd` | `requirements.txt`, `package_constraints.txt`, `esphome/manifest.json`, `zeroconf/manifest.json` | Цепочка зависимостей под 46.2.0: aioesphomeapi==46.2.0, cryptography>=48, PyOpenSSL>=25.4, zeroconf>=0.150, aiodns==4.0.4 + pycares==5.0.1 |
+| `7d24a421` | `Dockerfile.my_dev` | Финальный сверочный слой re-resolve после `uv pip install -e .` (кэш сборки подсовывал старый venv) |
+| `03c33fbd` | `esphome/assist_satellite.py` | `handle_audio(self, data: bytes, data2: bytes | None = None)` — 46.x шлёт второй аудиоканал; без фикса каждый чанк давал TypeError и плата висела «в прослушивании». Совместимо с 42.6.0 |
+
+### Критические знания
+
+- **Связка версий:** `requirements.txt` и `homeassistant/components/esphome/manifest.json` должны пинить **одну и ту же** версию aioesphomeapi. Иначе HA runtime lazy-install откатит либу до версии из manifest.
+- **ESPHome 2026.7.4 (API 1.14)** шлёт `object_id=""` → unique_id `{mac}-{component}-` коллидировали → HA регистрировал 1 сущность на компонент. Отсюда fallback-слаг.
+- **aioesphomeapi 46.x ломает API:** `execute_service` стал корутиной (sync-вызов = «never awaited», сервис молча не исполнялся), `handle_audio` принимает 2 аргумента.
+- **aiodns 3.5 + pycares 4.9** (старые пины) дают TypeError в radio_browser при загрузке сцен; лечится пара aiodns 4.0.4 + pycares 5.0.1.
+
+### Сервер 95.104.236.85 (порт ssh 8222, root)
+
+- Контейнер `homeassistant-mod`: compose-проект `green` (`/home/green/docker-compose.yaml`), образ `my-ha-dev:latest` (build из `Dockerfile.my_dev`, не из compose — секция build закомментирована), host network, config: `/home/green/homeassistant/config`, репо: `/home/green/docker-projects/core` (маунт → `/workspaces/core`).
+- **Обновление 26.08.2026:** репо `git merge --ff-only origin/dev` → `03c33fbd`, образ пересобран, внешний маунт `/home/green/ha-constraints/package_constraints.txt` закомментирован (строка 25 compose) — constraints теперь из репо. В контейнере: aioesphomeapi 46.2.0 / zeroconf 0.150.0 / aiodns 4.0.4 / pycares 5.0.1 / cryptography 50.0.1.
+- **Rollback:** `/root/ha-upgrade-20260826/` (.storage, docker-compose.yaml.bak) + образ `my-ha-dev:rollback-006e302c`.
+- **Чистки реестра:** 25.08 — 28 битых строк 4 lh-плат (бэкап `/root/core.entity_registry.bak-uidfix-20260825`); 26.08 — 868 orphan-`_2`-строк (бэкапы `/root/core.entity_registry.bak-orphan868-20260826`, `...bak-pipeline392-20260826`). Итог: 3769 сущностей.
+- **Феномен pipeline-пар:** каждая плата рекламирует **два** живых селекта `pipeline`/`pipeline_2` (uid `mac-pipeline` и `mac-pipeline_2`, оба object_id пустые → имена коллидируют → HA даёт `_2`). Пересоздаются при каждом старте — удалять бессмысленно. Полное решение — развести имена в ESPHome-YAML прошивки и перепрошить.
+- **Правки кода на сервере не делаются** — сервер только consumer (`ff-only` pull). Весь код пушится с локальной машины.
+
+### Локальный стенд (ha-test)
+
+- `docker-compose.yaml`: ha-test (8123), wyoming-onnxasr gigaam-v3-rnnt (10301), piper ru_RU-ruslan (10201). Chinese PyPI-зеркала (tsinghua) в env оставить.
+- Чистая переустановка 26.08.2026 проверена: fresh clone `dev` → `docker compose build --no-cache` → up → onboarding → версии либ в контейнере совпадают с сервером.
+- PowerShell→ssh калечит кавычки: python на сервер гонять через base64 (`echo $b | base64 -d | python3 -`), скрипты — scp + `sed -i 's/\r$//'`.
+
+---
+
 ## Документация
 
 - [SILERO_VAD.md](SILERO_VAD.md) — документация Silero VAD (архитектура, параметры, troubleshooting)
