@@ -14,6 +14,7 @@ from homeassistant.helpers.typing import ConfigType
 
 from .const import (
     CONF_DEBUG_RECORDING_DIR,
+    CONF_TRAINING_RECORDING_DIR,
     DATA_CONFIG,
     DATA_LAST_WAKE_UP,
     DATA_SILERO_VAD,
@@ -76,6 +77,7 @@ CONFIG_SCHEMA = vol.Schema(
         DOMAIN: vol.Schema(
             {
                 vol.Optional(CONF_DEBUG_RECORDING_DIR): str,
+                vol.Optional(CONF_TRAINING_RECORDING_DIR): str,
             },
         )
     },

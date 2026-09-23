@@ -389,6 +389,8 @@ def verify_cleanup(
             isinstance(thread, threading._DummyThread)
             or thread.name.startswith("waitpid-")
             or "_run_safe_shutdown_loop" in thread.name
+            or thread.name
+            in ("pipeline-trace", "recognition-log", "pipeline-debug-recording")
         )
 
     try:

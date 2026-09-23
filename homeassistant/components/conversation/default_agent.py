@@ -437,11 +437,25 @@ class DefaultAgent(ConversationEntity):
                 trigger_result, user_input
             )
 
+            trigger_automation: str | None = None
+            for trigger_id in trigger_result.matched_triggers:
+                details = self._triggers_details[trigger_id]
+                if details.automation_name:
+                    trigger_automation = details.automation_name
+                    break
+
             # Convert to conversation result
             response = intent.IntentResponse(
                 language=user_input.language or self.hass.config.language
             )
-            response.async_set_speech(response_text)
+            response.async_set_speech(
+                response_text,
+                extra_data=(
+                    {"trigger_automation": trigger_automation}
+                    if trigger_automation
+                    else None
+                ),
+            )
 
         if response is None:
             response = intent.IntentResponse(

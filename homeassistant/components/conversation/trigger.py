@@ -37,6 +37,7 @@ class TriggerDetails:
 
     sentences: list[str]
     callback: TRIGGER_CALLBACK_TYPE
+    automation_name: str | None = None
 
 
 def has_no_punctuation(value: list[str]) -> list[str]:
@@ -149,5 +150,9 @@ async def async_attach_trigger(
         return None
 
     return get_agent_manager(hass).register_trigger(
-        TriggerDetails(sentences=sentences, callback=call_action)
+        TriggerDetails(
+            sentences=sentences,
+            callback=call_action,
+            automation_name=trigger_info.get("name"),
+        )
     )

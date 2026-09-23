@@ -11,6 +11,7 @@ from enum import StrEnum
 import logging
 from pathlib import Path
 from queue import Empty, Queue
+import shutil
 from threading import Thread
 import time
 import threading
@@ -61,6 +62,7 @@ from .const import (
     ACKNOWLEDGE_PATH,
     BYTES_PER_CHUNK,
     CONF_DEBUG_RECORDING_DIR,
+    CONF_TRAINING_RECORDING_DIR,
     DATA_CONFIG,
     DATA_LAST_WAKE_UP,
     DATA_SILERO_VAD,
@@ -619,6 +621,12 @@ def _create_silero_vad(
     return manager.create_stream()
 
 
+def _sanitize_path_segment(name: str) -> str:
+    """Make a string safe to use as a single path segment."""
+    cleaned = "".join("_" if c in '\\/:*?"<>|' else c for c in name).strip(" ._")
+    return cleaned or "unknown"
+
+
 @dataclass
 class PipelineRun:
     """Running context for a pipeline."""
@@ -678,6 +686,9 @@ class PipelineRun:
 
     _trigger_matched_text: str | None = field(init=False, default=None)
     """Text that matched a trigger keyword, used to skip intent when no match."""
+
+    _trigger_automation: str | None = field(init=False, default=None)
+    """Friendly name of the automation that matched a sentence trigger."""
 
     def __post_init__(self) -> None:
         """Set language for pipeline."""
@@ -766,6 +777,7 @@ class PipelineRun:
         # Stop the recording thread before emitting run-end.
         # This ensures that files are properly closed if the event handler reads them.
         await self._stop_debug_recording_thread()
+        await self._async_save_training_recording()
 
         # Fire event with debug recording info
         if self.debug_recording_dir is not None:
@@ -1562,7 +1574,23 @@ class PipelineRun:
                     speech = conversation_result.response.speech.get("plain", {}).get(
                         "speech", ""
                     )
-                    
+
+                    _extra_data = conversation_result.response.speech.get(
+                        "plain", {}
+                    ).get("extra_data")
+                    if (
+                        isinstance(_extra_data, dict)
+                        and _extra_data.get("trigger_automation")
+                    ):
+                        self._trigger_automation = str(
+                            _extra_data["trigger_automation"]
+                        )
+                        PipelineTraceLogger.trace(
+                            self.id,
+                            "TRIGGER_AUTOMATION",
+                            name=f'"{self._trigger_automation[:60]}"',
+                        )
+
                     if speech == "Обращение не распознано":
                         PipelineTraceLogger.trace(
                             self.id, "INTENT_BLANKED",
@@ -1812,8 +1840,61 @@ class PipelineRun:
                 target=_pipeline_debug_recording_thread_proc,
                 args=(run_recording_dir, self.debug_recording_queue),
                 daemon=True,
+                name="pipeline-debug-recording",
             )
             self.debug_recording_thread.start()
+
+    async def _async_save_training_recording(self) -> None:
+        """Copy STT audio of an automation-triggered run into the training dataset."""
+        if (
+            self._trigger_automation is None
+            or self._satellite_id is None
+            or self.debug_recording_dir is None
+        ):
+            return
+
+        training_dir = self.hass.data[DATA_CONFIG].get(CONF_TRAINING_RECORDING_DIR)
+        if not training_dir:
+            return
+
+        automation_name = _sanitize_path_segment(self._trigger_automation)
+        satellite = self._satellite_id.removeprefix("assist_satellite.")
+        satellite = _sanitize_path_segment(satellite)
+
+        source_dir = self.debug_recording_dir
+        run_suffix = self.id[:12]
+
+        def _copy() -> Path | None:
+            stt_wav = next(
+                (
+                    p
+                    for p in source_dir.iterdir()
+                    if p.name.startswith("01_stt-") and p.suffix == ".wav"
+                ),
+                None,
+            )
+            if stt_wav is None:
+                return None
+            dest_dir = Path(training_dir) / satellite / automation_name
+            dest_dir.mkdir(parents=True, exist_ok=True)
+            dest = dest_dir / (
+                time.strftime("%Y-%m-%d_%H-%M-%S") + f"_{run_suffix}.wav"
+            )
+            shutil.copy2(stt_wav, dest)
+            return dest
+
+        try:
+            dest_path = await self.hass.async_add_executor_job(_copy)
+        except Exception:
+            _LOGGER.exception(
+                "Failed to save training recording (satellite=%s, automation=%s)",
+                self._satellite_id,
+                self._trigger_automation,
+            )
+            return
+
+        if dest_path is not None:
+            PipelineTraceLogger.trace(self.id, "TRAINING_SAVE", path=str(dest_path))
 
     async def _stop_debug_recording_thread(self) -> None:
         """Stop recording thread."""
