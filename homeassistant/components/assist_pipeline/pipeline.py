@@ -623,7 +623,8 @@ def _create_silero_vad(
 
 def _sanitize_path_segment(name: str) -> str:
     """Make a string safe to use as a single path segment."""
-    cleaned = "".join("_" if c in '\\/:*?"<>|' else c for c in name).strip(" ._")
+    bad = '\\/:*?"<>|\'«»“”„'
+    cleaned = "".join("_" if c in bad else c for c in name).strip(" ._")
     return cleaned or "unknown"
 
 

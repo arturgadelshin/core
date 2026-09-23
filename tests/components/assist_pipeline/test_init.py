@@ -19,6 +19,9 @@ from homeassistant.components.assist_pipeline.const import (
     CONF_TRAINING_RECORDING_DIR,
     DOMAIN,
 )
+from homeassistant.components.assist_pipeline.pipeline import (  # pylint: disable=hass-component-root-import
+    _sanitize_path_segment,
+)
 from homeassistant.core import Context, HomeAssistant
 from homeassistant.setup import async_setup_component
 
@@ -625,6 +628,18 @@ async def test_pipeline_training_recording(
         with wave.open(str(wav_files[0]), "rb") as wav_file:
             wav_data = wav_file.readframes(wav_file.getnframes())
             assert b"part1" in wav_data
+
+
+def test_sanitize_path_segment() -> None:
+    """Test automation names with quotes are sanitized for folders."""
+    assert _sanitize_path_segment("Укрытые") == "Укрытые"
+    assert _sanitize_path_segment('"Укрытые"') == "Укрытые"
+    assert _sanitize_path_segment("«Укрытые»") == "Укрытые"
+    assert _sanitize_path_segment("'Укрытые'") == "Укрытые"
+    assert _sanitize_path_segment("„Укрытые“") == "Укрытые"
+    assert _sanitize_path_segment('Укр"ы"тые') == "Укр_ы_тые"
+    assert _sanitize_path_segment('"???"') == "unknown"
+    assert _sanitize_path_segment('  "Укрытые."  ') == "Укрытые"
 
 
 async def test_pipeline_saved_audio_write_error(
