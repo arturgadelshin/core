@@ -16,8 +16,6 @@ import time
 from typing import Any, cast
 import wave
 
-from aioesphomeapi.core import TimeoutAPIError
-
 from aioesphomeapi import (
     MediaPlayerFormatPurpose,
     MediaPlayerSupportedFormat,
@@ -29,6 +27,7 @@ from aioesphomeapi import (
     VoiceAssistantFeature,
     VoiceAssistantTimerEventType,
 )
+from aioesphomeapi.core import TimeoutAPIError
 import voluptuous as vol
 from voluptuous.humanize import humanize_error
 
@@ -39,9 +38,7 @@ from homeassistant.components.assist_pipeline import (
     PipelineEventType,
     PipelineStage,
 )
-from homeassistant.components.assist_pipeline.pipeline_trace import (
-    PipelineTraceLogger,
-)
+from homeassistant.components.assist_pipeline.pipeline_trace import PipelineTraceLogger
 from homeassistant.components.http import StaticPathConfig
 from homeassistant.components.intent import (
     TimerEventType,
@@ -101,6 +98,8 @@ _TIMER_EVENT_TYPES: EsphomeEnumMapper[VoiceAssistantTimerEventType, TimerEventTy
 
 _ANNOUNCEMENT_TIMEOUT_SEC = 5 * 60  # 5 minutes
 _CONFIG_TIMEOUT_SEC = 5
+_AUDIO_STALL_TIMEOUT_SEC = 3.0
+_STALL_RECONNECT_MIN_INTERVAL_SEC = 30.0
 _WAKE_WORD_CONFIG_SCHEMA = vol.Schema(
     {
         vol.Required("type"): str,
@@ -148,6 +147,7 @@ class EsphomeAssistSatellite(
         self._audio_queue: asyncio.Queue[bytes | None] = asyncio.Queue()
         self._tts_streaming_task: asyncio.Task | None = None
         self._udp_server: VoiceAssistantUDPServer | None = None
+        self._last_stall_reconnect: float = 0.0
 
         # Empty config. Updated when added to HA.
         self._satellite_config = assist_satellite.AssistSatelliteConfiguration(
@@ -795,7 +795,26 @@ class EsphomeAssistSatellite(
         _audio_bytes = 0
         _stream_start = time.monotonic()
         while True:
-            chunk = await self._audio_queue.get()
+            try:
+                chunk = await asyncio.wait_for(
+                    self._audio_queue.get(), timeout=_AUDIO_STALL_TIMEOUT_SEC
+                )
+            except TimeoutError:
+                _LOGGER.warning(
+                    "Audio stream stalled (%.1fs without chunks, %d received so far),"
+                    " forcing API reconnect (satellite=%s)",
+                    _AUDIO_STALL_TIMEOUT_SEC,
+                    _chunk_idx,
+                    self.entity_id,
+                )
+                PipelineTraceLogger.trace_satellite(
+                    self.entity_id,
+                    "ESPHOME_STALL",
+                    chunks=_chunk_idx,
+                    gap=f"{_AUDIO_STALL_TIMEOUT_SEC}s",
+                )
+                self._async_reconnect_on_stall()
+                break
             if not chunk:
                 break
 
@@ -817,6 +836,25 @@ class EsphomeAssistSatellite(
             chunks=_chunk_idx,
             bytes=_audio_bytes,
             dur=f"{_stream_dur:.2f}s",
+        )
+
+    def _async_reconnect_on_stall(self) -> None:
+        """Force an API reconnect after an audio stream stall."""
+        now = time.monotonic()
+        if now - self._last_stall_reconnect < _STALL_RECONNECT_MIN_INTERVAL_SEC:
+            return
+
+        self._last_stall_reconnect = now
+        PipelineTraceLogger.trace_satellite(
+            self.entity_id, "ESPHOME_RECONNECT",
+            reason="audio_stall",
+        )
+
+        async def _disconnect() -> None:
+            await self.cli.disconnect(force=True)
+
+        self.config_entry.async_create_background_task(
+            self.hass, _disconnect(), "esphome_audio_stall_reconnect"
         )
 
     def _stop_pipeline(self) -> None:

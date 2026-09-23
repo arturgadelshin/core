@@ -402,6 +402,58 @@ async def test_pipeline_api_audio(
     mock_client.send_voice_assistant_audio.assert_called_once_with(b"test-wav")
 
 
+async def test_pipeline_audio_stall_reconnect(
+    hass: HomeAssistant,
+    mock_client: APIClient,
+    mock_esphome_device: MockESPHomeDeviceType,
+) -> None:
+    """Test that an audio stall ends the stream and forces an API reconnect."""
+    mock_device = await mock_esphome_device(
+        mock_client=mock_client,
+        device_info={
+            "voice_assistant_feature_flags": VoiceAssistantFeature.VOICE_ASSISTANT
+            | VoiceAssistantFeature.SPEAKER
+            | VoiceAssistantFeature.API_AUDIO
+        },
+    )
+    await hass.async_block_till_done()
+
+    satellite = get_satellite_entity(hass, mock_device.device_info.mac_address)
+    assert satellite is not None
+
+    stream_ended = asyncio.Event()
+    chunks: list[bytes] = []
+
+    async def async_pipeline_from_audio_stream(*args, **kwargs):
+        stt_stream = kwargs["stt_stream"]
+        chunks.extend([chunk async for chunk in stt_stream])
+        stream_ended.set()
+
+    with (
+        patch(
+            "homeassistant.components.assist_satellite.entity.async_pipeline_from_audio_stream",
+            new=async_pipeline_from_audio_stream,
+        ),
+        patch(
+            "homeassistant.components.esphome.assist_satellite._AUDIO_STALL_TIMEOUT_SEC",
+            0.1,
+        ),
+    ):
+        async with asyncio.timeout(1):
+            await satellite.handle_pipeline_start(
+                conversation_id=None,
+                flags=0,
+                audio_settings=VoiceAssistantAudioSettings(),
+                wake_word_phrase="",
+            )
+            await satellite.handle_audio(b"test-mic")
+            await stream_ended.wait()
+
+    assert chunks == [b"test-mic"]
+    await hass.async_block_till_done()
+    mock_client.disconnect.assert_awaited_once_with(force=True)
+
+
 @pytest.mark.usefixtures("socket_enabled")
 async def test_pipeline_udp_audio(
     hass: HomeAssistant,
