@@ -1845,8 +1845,46 @@ class PipelineRun:
             )
             self.debug_recording_thread.start()
 
+    async def _async_resolve_trigger_automation(self) -> str | None:
+        """Re-match trigger text to recover the automation name.
+
+        Needed because an automation may cancel the pipeline run (e.g. an
+        announce action) before recognize_intent can report the match.
+        """
+        if not self._trigger_matched_text:
+            return None
+        try:
+            agent = conversation.async_get_agent(
+                self.hass, conversation.HOME_ASSISTANT_AGENT
+            )
+            if not hasattr(agent, "async_get_sentence_trigger_automation"):
+                return None
+            user_input = conversation.ConversationInput(
+                text=self._trigger_matched_text,
+                context=self.context,
+                conversation_id=None,
+                device_id=self._device_id,
+                satellite_id=self._satellite_id,
+                language=self.language,
+                agent_id=conversation.HOME_ASSISTANT_AGENT,
+            )
+            return await agent.async_get_sentence_trigger_automation(user_input)
+        except Exception:
+            _LOGGER.debug("Trigger automation re-match failed", exc_info=True)
+        return None
+
     async def _async_save_training_recording(self) -> None:
         """Copy STT audio of an automation-triggered run into the training dataset."""
+        if self._trigger_automation is None:
+            self._trigger_automation = await self._async_resolve_trigger_automation()
+            if self._trigger_automation:
+                PipelineTraceLogger.trace(
+                    self.id,
+                    "TRIGGER_AUTOMATION",
+                    name=f'"{self._trigger_automation[:60]}"',
+                    source="rematch",
+                )
+
         if (
             self._trigger_automation is None
             or self._satellite_id is None

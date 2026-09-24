@@ -630,6 +630,95 @@ async def test_pipeline_training_recording(
             assert b"part1" in wav_data
 
 
+async def test_pipeline_training_recording_cancelled(
+    hass: HomeAssistant,
+    mock_stt_provider: MockSTTProvider,
+    mock_wake_word_provider_entity: MockWakeWordEntity,
+    init_supporting_components,
+    snapshot: SnapshotAssertion,
+) -> None:
+    """Test training recording saved when the automation cancels the run."""
+    with tempfile.TemporaryDirectory() as temp_dir_str:
+        temp_dir = Path(temp_dir_str)
+        assert await async_setup_component(
+            hass,
+            DOMAIN,
+            {
+                DOMAIN: {
+                    CONF_DEBUG_RECORDING_DIR: str(temp_dir / "debug"),
+                    CONF_TRAINING_RECORDING_DIR: str(temp_dir / "training"),
+                }
+            },
+        )
+
+        assert await async_setup_component(hass, "homeassistant", {})
+        assert await async_setup_component(hass, "conversation", {})
+        assert await async_setup_component(
+            hass,
+            "automation",
+            {
+                "automation": {
+                    "alias": "Test Lift",
+                    "trigger": {
+                        "platform": "conversation",
+                        "command": ["test transcript"],
+                    },
+                    "action": {"set_conversation_response": ""},
+                }
+            },
+        )
+        await hass.async_block_till_done()
+
+        pipeline = assist_pipeline.async_get_pipeline(hass)
+
+        async def audio_data():
+            yield make_10ms_chunk(b"wake word")
+            yield make_10ms_chunk(b"part1")
+            yield b""
+
+        async def cancel_run(**kwargs):
+            raise asyncio.CancelledError
+
+        with (
+            patch(
+                "homeassistant.components.conversation.async_converse",
+                new=cancel_run,
+            ),
+            pytest.raises(asyncio.CancelledError),
+        ):
+            await assist_pipeline.async_pipeline_from_audio_stream(
+                hass,
+                context=Context(),
+                event_callback=lambda event: None,
+                stt_metadata=stt.SpeechMetadata(
+                    language="",
+                    format=stt.AudioFormats.WAV,
+                    codec=stt.AudioCodecs.PCM,
+                    bit_rate=stt.AudioBitRates.BITRATE_16,
+                    sample_rate=stt.AudioSampleRates.SAMPLERATE_16000,
+                    channel=stt.AudioChannels.CHANNEL_MONO,
+                ),
+                stt_stream=audio_data(),
+                pipeline_id=pipeline.id,
+                start_stage=assist_pipeline.PipelineStage.WAKE_WORD,
+                end_stage=assist_pipeline.PipelineStage.INTENT,
+                satellite_id="assist_satellite.ec4_1_2_gh_none",
+                audio_settings=assist_pipeline.AudioSettings(is_vad_enabled=False),
+            )
+
+        training_root = temp_dir / "training"
+        satellite_dirs = list(training_root.iterdir())
+        assert len(satellite_dirs) == 1
+        assert satellite_dirs[0].name == "ec4_1_2_gh_none"
+
+        automation_dirs = list(satellite_dirs[0].iterdir())
+        assert len(automation_dirs) == 1
+        assert automation_dirs[0].name == "Test Lift"
+
+        wav_files = list(automation_dirs[0].glob("*.wav"))
+        assert len(wav_files) == 1
+
+
 def test_sanitize_path_segment() -> None:
     """Test automation names with quotes are sanitized for folders."""
     assert _sanitize_path_segment("Укрытые") == "Укрытые"

@@ -1643,6 +1643,19 @@ class DefaultAgent(ConversationEntity):
 
         return None
 
+    async def async_get_sentence_trigger_automation(
+        self, user_input: ConversationInput
+    ) -> str | None:
+        """Return the automation name of the first matching sentence trigger."""
+        trigger_result = await self.async_recognize_sentence_trigger(user_input)
+        if trigger_result is None:
+            return None
+        for trigger_id in trigger_result.matched_triggers:
+            details = self._triggers_details[trigger_id]
+            if details.automation_name:
+                return details.automation_name
+        return None
+
     async def async_handle_intents(
         self,
         user_input: ConversationInput,
