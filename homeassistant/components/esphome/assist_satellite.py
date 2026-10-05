@@ -98,13 +98,15 @@ _TIMER_EVENT_TYPES: EsphomeEnumMapper[VoiceAssistantTimerEventType, TimerEventTy
 
 _ANNOUNCEMENT_TIMEOUT_SEC = 5 * 60  # 5 minutes
 _CONFIG_TIMEOUT_SEC = 5
-# Longest gap without audio chunks before we tell the satellite to stop.
-# Must stay above both the pipeline's before_command_timeout_seconds (3.0 in
-# config/conf_assist_pipeline.yaml) and the firmware's own mic-stall guard
-# (AUDIO_CHANNEL_STALL_TIMEOUT_MS = 2000 in voice_assistant.cpp), so whichever
-# of those applies gets to clean up first; and well below
-# vad_timeout_seconds (30.0), which the pipeline's wall-clock timeout covers.
-_AUDIO_STALL_TIMEOUT_SEC = 4.0
+# Longest gap between two audio chunks before we tell the satellite to stop.
+# This is a per-chunk timeout, not a budget for the whole run: a device that
+# keeps streaming -- even streaming silence -- never trips it, so it does not
+# interact with the pipeline's before_command_timeout_seconds. It covers a
+# device that stops talking to us altogether, typically after a reboot or a
+# Wi-Fi drop. The firmware has its own mic-stall guard at 2s
+# (AUDIO_CHANNEL_STALL_TIMEOUT_MS in voice_assistant.cpp) for the case where
+# only one mic channel dies.
+_AUDIO_STALL_TIMEOUT_SEC = 3.0
 _WAKE_WORD_CONFIG_SCHEMA = vol.Schema(
     {
         vol.Required("type"): str,
