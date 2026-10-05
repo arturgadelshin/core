@@ -20,6 +20,7 @@ from aioesphomeapi import (
     VoiceAssistantFeature,
     VoiceAssistantTimerEventType,
 )
+from aioesphomeapi.core import APIConnectionError
 import pytest
 
 from homeassistant.components import (
@@ -402,12 +403,12 @@ async def test_pipeline_api_audio(
     mock_client.send_voice_assistant_audio.assert_called_once_with(b"test-wav")
 
 
-async def test_pipeline_audio_stall_reconnect(
+async def test_pipeline_audio_stall_stops_satellite(
     hass: HomeAssistant,
     mock_client: APIClient,
     mock_esphome_device: MockESPHomeDeviceType,
 ) -> None:
-    """Test that an audio stall ends the stream and forces an API reconnect."""
+    """Test that an audio stall ends the stream and tells the satellite to stop."""
     mock_device = await mock_esphome_device(
         mock_client=mock_client,
         device_info={
@@ -451,7 +452,46 @@ async def test_pipeline_audio_stall_reconnect(
 
     assert chunks == [b"test-mic"]
     await hass.async_block_till_done()
-    mock_client.disconnect.assert_awaited_once_with(force=True)
+
+    # The API connection must stay up, otherwise ERROR/RUN_END never reach the
+    # device and its firmware never runs on_error/on_end.
+    mock_client.disconnect.assert_not_called()
+
+    # The device is told to stop via an error event it does not ignore.
+    assert (
+        VoiceAssistantEventType.VOICE_ASSISTANT_ERROR,
+        {
+            "code": "audio-stream-stalled",
+            "message": "No audio received from satellite",
+        },
+    ) in [call.args for call in mock_client.send_voice_assistant_event.call_args_list]
+
+
+async def test_pipeline_event_survives_lost_connection(
+    hass: HomeAssistant,
+    mock_client: APIClient,
+    mock_esphome_device: MockESPHomeDeviceType,
+) -> None:
+    """Test that an undeliverable event does not break pipeline teardown."""
+    mock_device = await mock_esphome_device(
+        mock_client=mock_client,
+        device_info={
+            "voice_assistant_feature_flags": VoiceAssistantFeature.VOICE_ASSISTANT
+            | VoiceAssistantFeature.API_AUDIO
+        },
+    )
+    await hass.async_block_till_done()
+
+    satellite = get_satellite_entity(hass, mock_device.device_info.mac_address)
+    assert satellite is not None
+
+    mock_client.send_voice_assistant_event.side_effect = APIConnectionError(
+        "Not connected"
+    )
+
+    # Must not raise: the pipeline has to be able to run to completion even
+    # when nothing can be delivered to the device.
+    satellite.on_pipeline_event(PipelineEvent(PipelineEventType.RUN_END))
 
 
 @pytest.mark.usefixtures("socket_enabled")

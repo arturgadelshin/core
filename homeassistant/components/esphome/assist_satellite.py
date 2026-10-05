@@ -27,7 +27,7 @@ from aioesphomeapi import (
     VoiceAssistantFeature,
     VoiceAssistantTimerEventType,
 )
-from aioesphomeapi.core import TimeoutAPIError
+from aioesphomeapi.core import APIConnectionError, TimeoutAPIError
 import voluptuous as vol
 from voluptuous.humanize import humanize_error
 
@@ -98,8 +98,13 @@ _TIMER_EVENT_TYPES: EsphomeEnumMapper[VoiceAssistantTimerEventType, TimerEventTy
 
 _ANNOUNCEMENT_TIMEOUT_SEC = 5 * 60  # 5 minutes
 _CONFIG_TIMEOUT_SEC = 5
-_AUDIO_STALL_TIMEOUT_SEC = 3.0
-_STALL_RECONNECT_MIN_INTERVAL_SEC = 30.0
+# Longest gap without audio chunks before we tell the satellite to stop.
+# Must stay above both the pipeline's before_command_timeout_seconds (3.0 in
+# config/conf_assist_pipeline.yaml) and the firmware's own mic-stall guard
+# (AUDIO_CHANNEL_STALL_TIMEOUT_MS = 2000 in voice_assistant.cpp), so whichever
+# of those applies gets to clean up first; and well below
+# vad_timeout_seconds (30.0), which the pipeline's wall-clock timeout covers.
+_AUDIO_STALL_TIMEOUT_SEC = 4.0
 _WAKE_WORD_CONFIG_SCHEMA = vol.Schema(
     {
         vol.Required("type"): str,
@@ -147,7 +152,6 @@ class EsphomeAssistSatellite(
         self._audio_queue: asyncio.Queue[bytes | None] = asyncio.Queue()
         self._tts_streaming_task: asyncio.Task | None = None
         self._udp_server: VoiceAssistantUDPServer | None = None
-        self._last_stall_reconnect: float = 0.0
 
         # Empty config. Updated when added to HA.
         self._satellite_config = assist_satellite.AssistSatelliteConfiguration(
@@ -445,7 +449,29 @@ class EsphomeAssistSatellite(
                 # No TTS
                 self._entry_data.async_set_assist_pipeline_state(False)
 
-        self.cli.send_voice_assistant_event(event_type, data_to_send)
+        self._send_voice_assistant_event(event_type, data_to_send)
+
+    def _send_voice_assistant_event(
+        self, event_type: VoiceAssistantEventType, data_to_send: dict[str, Any]
+    ) -> None:
+        """Send an event to the satellite, tolerating a dead connection.
+
+        A single undeliverable event must not abort delivery of the remaining
+        events (in particular ERROR and RUN_END, which are what make the
+        firmware stop its microphone and run its on_error/on_end actions).
+        """
+        try:
+            self.cli.send_voice_assistant_event(event_type, data_to_send)
+        except APIConnectionError as err:
+            _LOGGER.warning(
+                "Could not send %s to satellite %s: %s",
+                event_type,
+                self.entity_id,
+                err,
+            )
+            PipelineTraceLogger.trace_satellite(
+                self.entity_id, "ESPHOME_EVENT_LOST", event=str(event_type),
+            )
 
     @convert_api_error_ha_error
     async def async_announce(
@@ -720,7 +746,7 @@ class EsphomeAssistSatellite(
         samples_per_chunk: int = 512,
     ) -> None:
         """Stream TTS audio chunks to device via API or UDP."""
-        self.cli.send_voice_assistant_event(
+        self._send_voice_assistant_event(
             VoiceAssistantEventType.VOICE_ASSISTANT_TTS_STREAM_START, {}
         )
 
@@ -781,7 +807,7 @@ class EsphomeAssistSatellite(
         except asyncio.CancelledError:
             return  # Don't trigger state change
         finally:
-            self.cli.send_voice_assistant_event(
+            self._send_voice_assistant_event(
                 VoiceAssistantEventType.VOICE_ASSISTANT_TTS_STREAM_END, {}
             )
 
@@ -802,7 +828,7 @@ class EsphomeAssistSatellite(
             except TimeoutError:
                 _LOGGER.warning(
                     "Audio stream stalled (%.1fs without chunks, %d received so far),"
-                    " forcing API reconnect (satellite=%s)",
+                    " telling satellite to stop (satellite=%s)",
                     _AUDIO_STALL_TIMEOUT_SEC,
                     _chunk_idx,
                     self.entity_id,
@@ -813,7 +839,16 @@ class EsphomeAssistSatellite(
                     chunks=_chunk_idx,
                     gap=f"{_AUDIO_STALL_TIMEOUT_SEC}s",
                 )
-                self._async_reconnect_on_stall()
+                # "audio-stream-stalled" is not one of the codes the firmware
+                # ignores, so it runs the full stop path: signal_stop_() ->
+                # STOP_MICROPHONE -> on_error.
+                self._send_voice_assistant_event(
+                    VoiceAssistantEventType.VOICE_ASSISTANT_ERROR,
+                    {
+                        "code": "audio-stream-stalled",
+                        "message": "No audio received from satellite",
+                    },
+                )
                 break
             if not chunk:
                 break
@@ -836,25 +871,6 @@ class EsphomeAssistSatellite(
             chunks=_chunk_idx,
             bytes=_audio_bytes,
             dur=f"{_stream_dur:.2f}s",
-        )
-
-    def _async_reconnect_on_stall(self) -> None:
-        """Force an API reconnect after an audio stream stall."""
-        now = time.monotonic()
-        if now - self._last_stall_reconnect < _STALL_RECONNECT_MIN_INTERVAL_SEC:
-            return
-
-        self._last_stall_reconnect = now
-        PipelineTraceLogger.trace_satellite(
-            self.entity_id, "ESPHOME_RECONNECT",
-            reason="audio_stall",
-        )
-
-        async def _disconnect() -> None:
-            await self.cli.disconnect(force=True)
-
-        self.config_entry.async_create_background_task(
-            self.hass, _disconnect(), "esphome_audio_stall_reconnect"
         )
 
     def _stop_pipeline(self) -> None:

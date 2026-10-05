@@ -22,6 +22,15 @@ _MAX_ARCHIVES = 3
 _FLUSH_INTERVAL = 0.5
 
 
+def _now_stamp() -> str:
+    """Timestamp for trace lines.
+
+    Same format as home-assistant.log so lines from both logs line up and
+    sort as-is.
+    """
+    return datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
+
+
 class PipelineTraceLogger:
     """Writes detailed pipeline execution traces to a text file.
 
@@ -96,7 +105,7 @@ class PipelineTraceLogger:
         if satellite_id:
             PipelineTraceLogger._sat_to_run[satellite_id] = run_id
 
-        now = datetime.now().strftime("%H:%M:%S.%f")[:-3]
+        now = _now_stamp()
         sat = satellite_id or "unknown"
         a = audio_settings
         block = (
@@ -123,7 +132,7 @@ class PipelineTraceLogger:
         else:
             elapsed = 0.0
 
-        now = datetime.now().strftime("%H:%M:%S.%f")[:-3]
+        now = _now_stamp()
         parts = [f"[{now}] {stage:<13}"]
         for k, v in kwargs.items():
             parts.append(f"{k}={v}")
@@ -145,7 +154,7 @@ class PipelineTraceLogger:
         if total_dur is None and timing is not None:
             total_dur = time.monotonic() - timing["_start"]
 
-        now = datetime.now().strftime("%H:%M:%S.%f")[:-3]
+        now = _now_stamp()
         dur_str = f"{total_dur:.2f}s" if total_dur is not None else "?"
         line = (
             f"[{now}] RUN_END       "
