@@ -614,6 +614,9 @@ class EsphomeAssistSatellite(
                 break
 
             if not (ww_state := self.hass.states.get(ww_entity_id)):
+                # Entity configured but has no state yet: skip it. Without the
+                # increment this loop would spin forever and block the event loop.
+                maybe_pipeline_index += 1
                 continue
 
             if ww_state.state == wake_word_phrase:
