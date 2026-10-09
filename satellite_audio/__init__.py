@@ -20,6 +20,13 @@ import voluptuous as vol
 from aioesphomeapi import VoiceAssistantEventType
 
 from homeassistant.components import switch
+from homeassistant.components.media_player import MediaClass, MediaType
+from homeassistant.components.media_source.models import (
+    BrowseMediaSource,
+    MediaSource,
+    MediaSourceItem,
+    PlayMedia,
+)
 from homeassistant.config_entries import ConfigEntryState
 from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant, callback
@@ -492,6 +499,7 @@ class SatelliteAudioManager:
     def _register_views(self) -> None:
         from .views import (
             ControlView,
+            FileView,
             LiveSocketView,
             LiveView,
             PanelView,
@@ -506,6 +514,7 @@ class SatelliteAudioManager:
             LiveSocketView(),
             PanelView(),
             SilentWavView(),
+            FileView(),
         ):
             self.hass.http.register_view(view)
 
@@ -608,6 +617,148 @@ class SatelliteAudioManager:
     def notify_change(self, session: SatSession) -> None:
         for entity in self.entities.get(session.entity_id, []):
             entity.async_write_ha_state()
+
+
+class SatelliteAudioMediaSource(MediaSource):
+    """Expose live streams and recordings to HA media browser."""
+
+    name = "Спутники — аудио"
+
+    def __init__(self, hass: HomeAssistant) -> None:
+        super().__init__(DOMAIN)
+        self.hass = hass
+
+    def _manager(self) -> SatelliteAudioManager | None:
+        return self.hass.data.get(DOMAIN)
+
+    def _session_by_key(self, key: str) -> SatSession | None:
+        manager = self._manager()
+        if manager is None:
+            return None
+        for session in manager.sessions.values():
+            if _sanitize(session.name) == key:
+                return session
+        return None
+
+    def _browse_satellite(self, session: SatSession) -> BrowseMediaSource:
+        key = _sanitize(session.name)
+        children = []
+        if session.listening and session.live_token:
+            children.append(
+                BrowseMediaSource(
+                    domain=DOMAIN,
+                    identifier=f"{key}/live",
+                    media_class=MediaClass.MUSIC,
+                    media_content_type=MediaType.MUSIC,
+                    title="Живой эфир",
+                    can_play=True,
+                    can_expand=False,
+                )
+            )
+        recordings_dir = (
+            Path(self.hass.config.config_dir) / RECORDINGS_DIR / key
+        )
+        if recordings_dir.is_dir():
+            files = sorted(
+                (f for f in recordings_dir.iterdir() if f.suffix == ".wav"),
+                key=lambda f: f.name,
+                reverse=True,
+            )
+            for recording in files[:200]:
+                children.append(
+                    BrowseMediaSource(
+                        domain=DOMAIN,
+                        identifier=f"{key}/{recording.name}",
+                        media_class=MediaClass.MUSIC,
+                        media_content_type=MediaType.MUSIC,
+                        title=recording.stem,
+                        can_play=True,
+                        can_expand=False,
+                    )
+                )
+        return BrowseMediaSource(
+            domain=DOMAIN,
+            identifier=key,
+            media_class=MediaClass.DIRECTORY,
+            media_content_type="",
+            title=session.name,
+            can_play=False,
+            can_expand=True,
+            children=children,
+            children_media_class=MediaClass.MUSIC,
+        )
+
+    async def async_browse_media(
+        self, item: MediaSourceItem
+    ) -> BrowseMediaSource:
+        manager = self._manager()
+        if manager is None or not manager.sessions:
+            return BrowseMediaSource(
+                domain=DOMAIN,
+                identifier=None,
+                media_class=MediaClass.DIRECTORY,
+                media_content_type="",
+                title=self.name,
+                can_play=False,
+                can_expand=False,
+            )
+        if item.identifier:
+            parts = item.identifier.split("/", 1)
+            session = self._session_by_key(parts[0])
+            if session is not None:
+                return self._browse_satellite(session)
+        children = [
+            self._browse_satellite(session)
+            for session in sorted(
+                manager.sessions.values(), key=lambda s: s.name
+            )
+        ]
+        return BrowseMediaSource(
+            domain=DOMAIN,
+            identifier=None,
+            media_class=MediaClass.DIRECTORY,
+            media_content_type="",
+            title=self.name,
+            can_play=False,
+            can_expand=True,
+            children=children,
+            children_media_class=MediaClass.DIRECTORY,
+        )
+
+    async def async_resolve_media(self, item: MediaSourceItem) -> PlayMedia:
+        if not item.identifier:
+            raise ValueError("Nothing to play")
+        parts = item.identifier.split("/", 1)
+        if len(parts) < 2:
+            raise ValueError("Nothing to play")
+        key, leaf = parts
+        session = self._session_by_key(key)
+        if session is None:
+            raise ValueError(f"Unknown satellite {key}")
+        base_url = get_url(self.hass, allow_cloud=False, allow_ip=True)
+        if leaf == "live":
+            if not session.listening or not session.live_token:
+                raise ValueError("Live stream is not active")
+            return PlayMedia(
+                url=f"{base_url}/api/satellite_audio/live/{session.live_token}",
+                mime_type="audio/wav",
+            )
+        filename = Path(leaf).name
+        if not filename.endswith(".wav"):
+            raise ValueError("Not a recording")
+        path = (
+            Path(self.hass.config.config_dir) / RECORDINGS_DIR / key / filename
+        )
+        if not path.is_file():
+            raise ValueError("Recording not found")
+        return PlayMedia(
+            url=f"{base_url}/api/satellite_audio/file/{key}/{filename}",
+            mime_type="audio/wav",
+        )
+
+
+async def async_get_media_source(hass: HomeAssistant) -> SatelliteAudioMediaSource:
+    return SatelliteAudioMediaSource(hass)
 
 
 async def async_setup(hass: HomeAssistant, config) -> bool:

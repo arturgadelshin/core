@@ -4,7 +4,7 @@
   "codeowners": ["@arturgadelshin"],
   "config_flow": false,
   "dependencies": ["http", "switch"],
-  "after_dependencies": ["esphome", "assist_satellite"],
+  "after_dependencies": ["esphome", "assist_satellite", "media_source"],
   "documentation": "https://github.com/arturgadelshin/core/blob/dev/docs/assistant-audio-controls.md",
   "integration_type": "service",
   "iot_class": "local_push",

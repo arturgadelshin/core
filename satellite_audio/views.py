@@ -2,12 +2,13 @@ from __future__ import annotations
 
 import asyncio
 import struct
+from pathlib import Path
 
 from aiohttp import web
 
 from homeassistant.components.http import HomeAssistantView
 
-from . import DOMAIN, LISTEN, RECORD, SatelliteAudioManager
+from . import DOMAIN, LISTEN, RECORD, RECORDINGS_DIR, SatelliteAudioManager
 
 WAV_HEADER = struct.pack(
     "<4sI4s4sIHHIIHH4sI",
@@ -371,4 +372,23 @@ class SilentWavView(HomeAssistantView):
             body=SILENT_WAV,
             content_type="audio/wav",
             headers={"Cache-Control": "no-store"},
+        )
+
+
+class FileView(HomeAssistantView):
+    url = "/api/satellite_audio/file/{key}/{filename}"
+    name = "api:satellite_audio:file"
+    requires_auth = False
+
+    async def get(self, request: web.Request, key: str, filename: str) -> web.Response:
+        hass = request.app["hass"]
+        base = (Path(hass.config.config_dir) / RECORDINGS_DIR / key).resolve()
+        if not filename.endswith(".wav"):
+            return self.json_message("not a recording", status_code=400)
+        path = (base / Path(filename).name).resolve()
+        if path.parent != base or not path.is_file():
+            return self.json_message("recording not found", status_code=404)
+        return web.FileResponse(
+            path,
+            headers={"Content-Type": "audio/wav", "Cache-Control": "no-store"},
         )
