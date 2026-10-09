@@ -255,3 +255,6 @@ for row in conn.execute('SELECT * FROM satellite_settings'):
 ## Документация
 
 - [SILERO_VAD.md](SILERO_VAD.md) — документация Silero VAD (архитектура, параметры, troubleshooting)
+- [docs/mic-stall-fix.md](docs/mic-stall-fix.md) — глухота EC4: детектор затыка микрофона в прошивке + самолечение (Фаза 2)
+- [docs/fleet-audit-2026-10.md](docs/fleet-audit-2026-10.md) — аудит флота: stall-шторм 5–8 окт, микротест микрофонов, ночная перезагрузка, зомби-сессии
+- [docs/assistant-audio-controls.md](docs/assistant-audio-controls.md) — кнопки Прослушивание/Запись у каждого ассистента (custom component `satellite_audio`)

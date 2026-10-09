@@ -1,6 +1,11 @@
 /config
 config2/*
 
+# Local docker stand artifacts
+docker-compose.override.yaml
+model-cache/
+piper-data/
+
 tests/testing_config/deps
 tests/testing_config/home-assistant.log*
 

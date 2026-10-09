@@ -1,0 +1,41 @@
+listen:
+  name: Прослушивание
+  description: Включает или выключает живое прослушивание микрофона спутника
+  fields:
+    entity_id:
+      name: Спутник
+      description: Entity ID ассистента (assist_satellite.*)
+      required: true
+      example: assist_satellite.ec4_test_board_none
+      selector:
+        entity:
+          integration: esphome
+          domain: assist_satellite
+    enabled:
+      name: Включено
+      description: true — включить, false — выключить
+      required: true
+      example: true
+      selector:
+        boolean:
+
+record:
+  name: Запись
+  description: Включает или выключает запись микрофона спутника в WAV
+  fields:
+    entity_id:
+      name: Спутник
+      description: Entity ID ассистента (assist_satellite.*)
+      required: true
+      example: assist_satellite.ec4_test_board_none
+      selector:
+        entity:
+          integration: esphome
+          domain: assist_satellite
+    enabled:
+      name: Включено
+      description: true — включить запись, false — остановить и сохранить
+      required: true
+      example: true
+      selector:
+        boolean:
