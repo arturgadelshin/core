@@ -490,9 +490,23 @@ class SatelliteAudioManager:
             await session.shutdown()
 
     def _register_views(self) -> None:
-        from .views import ControlView, LiveView, PanelView, SilentWavView, StatusView
+        from .views import (
+            ControlView,
+            LiveSocketView,
+            LiveView,
+            PanelView,
+            SilentWavView,
+            StatusView,
+        )
 
-        for view in (StatusView(), ControlView(), LiveView(), PanelView(), SilentWavView()):
+        for view in (
+            StatusView(),
+            ControlView(),
+            LiveView(),
+            LiveSocketView(),
+            PanelView(),
+            SilentWavView(),
+        ):
             self.hass.http.register_view(view)
 
     def _register_services(self) -> None:

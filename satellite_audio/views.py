@@ -60,41 +60,121 @@ h1{font-size:18px}
 .name{font-weight:bold;margin-bottom:8px}
 .badge{display:inline-block;padding:2px 8px;border-radius:10px;font-size:12px;margin-left:8px}
 .on{background:#2e7d32}.off{background:#454c56}
-button{border:0;border-radius:8px;padding:8px 14px;font-size:14px;margin-right:8px;cursor:pointer}
+button{border:0;border-radius:8px;padding:10px 16px;font-size:15px;margin-right:8px;cursor:pointer}
 .l-on{background:#4caf50}.l-off{background:#607080}
 .r-on{background:#e53935}.r-off{background:#607080}
-audio{width:100%;margin-top:10px}
-.meta{font-size:12px;color:#9aa4b2;margin-top:6px}
+.meter{height:8px;background:#2a313a;border-radius:4px;margin-top:12px;overflow:hidden}
+.meter div{height:100%;width:0;background:#4caf50;border-radius:4px}
+.meta{font-size:12px;color:#9aa4b2;margin-top:8px}
+.state{font-size:12px;margin-top:8px}
+.state.ok{color:#81c784}.state.err{color:#e57373}
 </style>
 </head>
 <body>
 <h1>Спутники — живое прослушивание и запись</h1>
 <div id="list">Загрузка…</div>
 <script>
-let state = {};
+const players = {};
+let audioCtx = null;
+
+function ensureCtx() {
+  if (!audioCtx) {
+    const Ctor = window.AudioContext || window.webkitAudioContext;
+    try { audioCtx = new Ctor({sampleRate: 16000}); }
+    catch (e) { audioCtx = new Ctor(); }
+  }
+  if (audioCtx.state === 'suspended') audioCtx.resume();
+  return audioCtx;
+}
+
+function connectStream(sat, card) {
+  const key = sat.entity_id;
+  if (players[key] && players[key].url === sat.live_url && players[key].open) return;
+  disconnectStream(key);
+  const ctx = ensureCtx();
+  const wsUrl = (location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host + sat.live_url.replace('/live/', '/ws/');
+  const ws = new WebSocket(wsUrl);
+  ws.binaryType = 'arraybuffer';
+  const st = {url: sat.live_url, ws: ws, open: true, nextTime: 0, meter: card.querySelector('.meter div'), state: card.querySelector('.state')};
+  players[key] = st;
+  const setState = (text, cls) => { st.state.textContent = text; st.state.className = 'state ' + cls; };
+  setState('подключение к эфиру…', '');
+  ws.onopen = () => setState('эфир идёт', 'ok');
+  ws.onmessage = (ev) => {
+    const i16 = new Int16Array(ev.data);
+    let peak = 0;
+    for (let i = 0; i < i16.length; i++) { const a = Math.abs(i16[i]); if (a > peak) peak = a; }
+    if (st.meter) st.meter.style.width = Math.min(100, peak / 200).toFixed(0) + '%';
+    let buf;
+    if (ctx.sampleRate === 16000) {
+      buf = ctx.createBuffer(1, i16.length, 16000);
+      const f32 = buf.getChannelData(0);
+      for (let i = 0; i < i16.length; i++) f32[i] = i16[i] / 32768;
+    } else {
+      const ratio = 16000 / ctx.sampleRate;
+      const outLen = Math.max(1, Math.floor(i16.length * ratio));
+      buf = ctx.createBuffer(1, outLen, ctx.sampleRate);
+      const f32 = buf.getChannelData(0);
+      for (let i = 0; i < outLen; i++) {
+        const j = i / ratio, j0 = Math.floor(j), j1 = Math.min(j0 + 1, i16.length - 1), t = j - j0;
+        f32[i] = (i16[j0] * (1 - t) + i16[j1] * t) / 32768;
+      }
+    }
+    const src = ctx.createBufferSource();
+    src.buffer = buf;
+    src.connect(ctx.destination);
+    const now = ctx.currentTime;
+    if (st.nextTime < now + 0.02) st.nextTime = now + 0.06;
+    src.start(st.nextTime);
+    st.nextTime += buf.duration;
+    if (st.nextTime - now > 1.5) st.nextTime = now + 0.4;
+  };
+  ws.onclose = () => {
+    if (players[key] === st) {
+      st.open = false;
+      if (st.meter) st.meter.style.width = '0%';
+      setState('эфир остановлен', '');
+    }
+  };
+  ws.onerror = () => setState('ошибка соединения', 'err');
+}
+
+function disconnectStream(key) {
+  const p = players[key];
+  if (p) {
+    p.open = false;
+    try { p.ws.close(); } catch (e) {}
+    delete players[key];
+  }
+}
+
 async function refresh() {
   const resp = await fetch('/api/satellite_audio/status');
-  state = await resp.json();
-  render();
+  const state = await resp.json();
+  render(state);
 }
-function fmt(s){return s?(''+Math.floor(s/60)+':'+String(Math.floor(s%60)).padStart(2,'0')):''}
-function render() {
+
+function fmt(s) { return s ? ('' + Math.floor(s / 60) + ':' + String(Math.floor(s % 60)).padStart(2, '0')) : ''; }
+
+function render(state) {
   const root = document.getElementById('list');
   if (!state.satellites || !state.satellites.length) {
     root.textContent = 'Спутники не найдены';
     return;
   }
   for (const sat of state.satellites) {
-    let card = document.getElementById('card-' + sat.entity_id.replace(/\./g,'-'));
+    const cardId = 'card-' + sat.entity_id.replace(/\./g, '-');
+    let card = document.getElementById(cardId);
     if (!card) {
       card = document.createElement('div');
       card.className = 'card';
-      card.id = 'card-' + sat.entity_id.replace(/\./g,'-');
+      card.id = cardId;
       card.innerHTML = '<div class="name"></div>' +
         '<button class="listen"></button>' +
         '<button class="record"></button>' +
-        '<div class="meta"></div>' +
-        '<audio controls></audio>';
+        '<div class="meter"><div></div></div>' +
+        '<div class="state"></div>' +
+        '<div class="meta"></div>';
       card.querySelector('.listen').onclick = () => control(sat.entity_id, 'listen', !sat.listening);
       card.querySelector('.record').onclick = () => control(sat.entity_id, 'record', !sat.recording);
       root.appendChild(card);
@@ -112,21 +192,18 @@ function render() {
     if (sat.recording_seconds) meta.push('пишется ' + fmt(sat.recording_seconds));
     if (sat.last_recording_file) meta.push('последняя: ' + sat.last_recording_file.split('/').pop() + ' (' + fmt(sat.last_recording_seconds) + ')');
     card.querySelector('.meta').textContent = meta.join(' · ');
-    const audio = card.querySelector('audio');
     if (sat.listening && sat.live_url) {
-      if (audio.dataset.src !== sat.live_url) {
-        audio.dataset.src = sat.live_url;
-        audio.src = sat.live_url;
-        audio.play().catch(() => {});
-      }
-    } else if (audio.dataset.src) {
-      audio.dataset.src = '';
-      audio.pause();
-      audio.removeAttribute('src');
+      connectStream(sat, card);
+    } else {
+      disconnectStream(sat.entity_id);
+      card.querySelector('.state').textContent = '';
+      card.querySelector('.meter div').style.width = '0%';
     }
   }
 }
+
 async function control(entity_id, action, enabled) {
+  if (action === 'listen' && enabled) ensureCtx();
   await fetch('/api/satellite_audio/control', {
     method: 'POST',
     headers: {'Content-Type': 'application/json'},
@@ -134,6 +211,7 @@ async function control(entity_id, action, enabled) {
   });
   refresh();
 }
+
 refresh();
 setInterval(refresh, 2000);
 </script>
@@ -239,6 +317,39 @@ class LiveView(HomeAssistantView):
         finally:
             session.live_queues.discard(live_queue)
         return response
+
+
+class LiveSocketView(HomeAssistantView):
+    url = "/api/satellite_audio/ws/{token}"
+    name = "api:satellite_audio:ws"
+    requires_auth = False
+
+    async def get(self, request: web.Request, token: str) -> web.WebSocketResponse:
+        manager = _manager(request)
+        session = None
+        for candidate in manager.sessions.values():
+            if candidate.listening and candidate.live_token == token:
+                session = candidate
+                break
+        websocket = web.WebSocketResponse(heartbeat=30)
+        await websocket.prepare(request)
+        if session is None:
+            await websocket.close(code=4004)
+            return websocket
+        live_queue: asyncio.Queue[bytes | None] = asyncio.Queue(maxsize=300)
+        session.live_queues.add(live_queue)
+        try:
+            while True:
+                chunk = await live_queue.get()
+                if chunk is None:
+                    await websocket.close()
+                    break
+                await websocket.send_bytes(chunk)
+        except (asyncio.CancelledError, ConnectionResetError):
+            pass
+        finally:
+            session.live_queues.discard(live_queue)
+        return websocket
 
 
 class PanelView(HomeAssistantView):
