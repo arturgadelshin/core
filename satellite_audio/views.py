@@ -89,6 +89,15 @@ function ensureCtx() {
   return audioCtx;
 }
 
+function tryResume() {
+  if (audioCtx && audioCtx.state === 'suspended') {
+    audioCtx.resume().catch(function () {});
+  }
+}
+['click', 'touchstart', 'keydown'].forEach(function (ev) {
+  document.addEventListener(ev, tryResume, {passive: true});
+});
+
 function connectStream(sat, card) {
   const key = sat.entity_id;
   if (players[key] && players[key].url === sat.live_url && players[key].open) return;
@@ -97,12 +106,20 @@ function connectStream(sat, card) {
   const wsUrl = (location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host + sat.live_url.replace('/live/', '/ws/');
   const ws = new WebSocket(wsUrl);
   ws.binaryType = 'arraybuffer';
-  const st = {url: sat.live_url, ws: ws, open: true, nextTime: 0, meter: card.querySelector('.meter div'), state: card.querySelector('.state')};
+  const st = {url: sat.live_url, ws: ws, open: true, nextTime: 0, blocked: null, meter: card.querySelector('.meter div'), state: card.querySelector('.state')};
   players[key] = st;
   const setState = (text, cls) => { st.state.textContent = text; st.state.className = 'state ' + cls; };
   setState('подключение к эфиру…', '');
   ws.onopen = () => setState('эфир идёт', 'ok');
   ws.onmessage = (ev) => {
+    const blocked = ctx.state !== 'running';
+    if (st.blocked !== blocked) {
+      st.blocked = blocked;
+      setState(
+        blocked ? 'звук заблокирован браузером — кликни по странице' : 'эфир идёт',
+        blocked ? 'err' : 'ok'
+      );
+    }
     const i16 = new Int16Array(ev.data);
     let peak = 0;
     for (let i = 0; i < i16.length; i++) { const a = Math.abs(i16[i]); if (a > peak) peak = a; }
@@ -113,12 +130,12 @@ function connectStream(sat, card) {
       const f32 = buf.getChannelData(0);
       for (let i = 0; i < i16.length; i++) f32[i] = i16[i] / 32768;
     } else {
-      const ratio = 16000 / ctx.sampleRate;
-      const outLen = Math.max(1, Math.floor(i16.length * ratio));
+      const outLen = Math.max(1, Math.floor(i16.length * ctx.sampleRate / 16000));
       buf = ctx.createBuffer(1, outLen, ctx.sampleRate);
       const f32 = buf.getChannelData(0);
+      const step = 16000 / ctx.sampleRate;
       for (let i = 0; i < outLen; i++) {
-        const j = i / ratio, j0 = Math.floor(j), j1 = Math.min(j0 + 1, i16.length - 1), t = j - j0;
+        const j = i * step, j0 = Math.floor(j), j1 = Math.min(j0 + 1, i16.length - 1), t = j - j0;
         f32[i] = (i16[j0] * (1 - t) + i16[j1] * t) / 32768;
       }
     }
