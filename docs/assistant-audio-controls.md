@@ -38,23 +38,15 @@ Custom component `satellite_audio`: живое прослушивание ком
 
 ## Поля «Микрофон» (коэффициенты — каждое отдельно)
 
-На странице устройства платы (категория «Настройки») — 11 number-полей
-+ 1 select. Каждое поле: свой диапазон, имя с пояснением, атрибут
-`comment` с полным описанием, атрибут `firmware` с коэффициентами прошивки.
+На странице устройства платы (категория «Настройки») — 3 number-поля.
+Каждое поле: свой диапазон, имя с пояснением, атрибут `comment` с полным
+описанием, атрибут `firmware` с коэффициентами прошивки.
 
 | Поле | Диапазон | Атрибут ассистента | Сервис |
 |------|----------|--------------------|--------|
 | Шумоподавление 0-4 | 0–4 | noise_suppression_level | set_noise_suppression |
 | Автоусиление дБ 0-31 | 0–31 | auto_gain_dbfs | set_auto_gain |
 | Множитель громкости 0.1-30 | 0.1–30 | volume_multiplier | set_volume_multiplier |
-| VAD порог речи | 0.1–1 | speech_threshold | set_speech_threshold |
-| VAD порог начала речи | 0.05–0.9 | before_command_speech_threshold | set_before_command_speech_threshold |
-| VAD тишина до обрыва с | 0.3–10 | silence_seconds | set_silence_seconds |
-| VAD мин. команда с | 0.3–10 | command_seconds | set_command_seconds |
-| VAD макс. запись с | 1–60 | vad_timeout_seconds | set_vad_timeout |
-| VAD ожидание речи с | 1–30 | before_command_timeout_seconds | set_before_command_timeout |
-| VAD таймаут триггера с | 1–30 | trigger_timeout_seconds | set_trigger_timeout |
-| VAD режим | singleton / per_pipeline | vad_mode | set_vad_mode |
 
 Ввод значения → сервис форка `assist_satellite.set_*`. Значения live —
 обновляются от атрибутов ассистента (подписка на state changes).
@@ -62,8 +54,31 @@ Custom component `satellite_audio`: живое прослушивание ком
 per-satellite, дефолты `conf_assist_pipeline.yaml`.
 
 API: `POST /api/satellite_audio/control` c `action=mic, value=<k=v …>`
-(короткие или полные имена ключей), текущие значения — в
+(ключи ns, ag, vol — короткие или полные имена), текущие значения — в
 `GET /api/satellite_audio/status` (блок `mic`).
+
+## VAD-параметры — глобальные (не per-device)
+
+Пороги/таймауты VAD (speech_threshold, before_command_speech_threshold,
+silence_seconds, command_seconds, vad_timeout_seconds,
+before_command_timeout_seconds, trigger_timeout_seconds, vad_mode)
+настраиваются **сразу для всех ассистентов** через файл:
+
+- прод: `/home/green/homeassistant/config/conf_assist_pipeline.yaml`
+  (в контейнере `/config/conf_assist_pipeline.yaml`)
+- локальный стенд: `config/conf_assist_pipeline.yaml`
+
+Порядок: правишь значения → перезапуск HA. Приоритет: SQLite-строка
+спутника > YAML > hardcoded (см. vad_settings_db.py).
+
+Нюанс: любая per-device настройка создаёт SQLite-строку, в которой
+VAD-колонки заполняются SQL-дефолтами — с этого момента YAML-дефолты
+VAD на этого спутника не действуют (до удаления строки из БД). Кандидат
+на обсуждение в Фазе 2.
+
+Точечная подстройка конкретного спутника при необходимости — сервисы
+форка `assist_satellite.set_silence_seconds` и т.п.
+(Инструменты разработчика → Сервисы).
 
 ## Коэффициенты прошивки (read-only)
 
@@ -142,8 +157,9 @@ Runtime-действий в esphome-cx нет (только компиляция
 - [x] Запись 8.2с → 264 КБ WAV, поверх активной прослушки
 - [x] Выключение: состояние off стабильное, RUN_END уходит
 - [x] Панель `/api/satellite_audio/panel` рендерится (+ режим ?satellite=)
-- [x] Поля «Микрофон»: 11 number + 1 select созданы и привязаны к устройству;
-  ns=2 speech=0.5 → атрибуты ассистента обновились; сброс OK
+- [x] Поля «Микрофон»: 3 number (ns/ag/vol) созданы и привязаны к устройству;
+  ns=2 → атрибут ассистента обновился; VAD-поля убраны из UI (реестр чист);
+  осиротевшие сущности вычищаются при reconcile
 - [x] Глобус: configuration_url → panel?satellite=… на устройстве платы
 - [x] Прошивка: text_sensor «Микрофон прошивка» виден, атрибут firmware
   поля «Микрофон» = mic_gain=-38.0 va_gain=1 mww_gain=2 prob=0.8 …
