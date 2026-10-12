@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import logging
 import re
 
+from homeassistant.components.button import ButtonEntity
 from homeassistant.components.number import NumberEntity, NumberMode
 from homeassistant.const import STATE_UNAVAILABLE, STATE_UNKNOWN
 from homeassistant.core import callback
@@ -12,6 +14,8 @@ from homeassistant.helpers.entity import EntityCategory
 from homeassistant.helpers.event import async_track_state_change_event
 
 from . import SatSession
+
+_LOGGER = logging.getLogger(__name__)
 
 _TOKEN_RE = re.compile(r"^([A-Za-z_0-9]+)=(\S+)$")
 
@@ -226,5 +230,76 @@ class SatelliteMicNumber(NumberEntity):
         self.async_write_ha_state()
 
 
-def build_mic_entities(session: SatSession) -> list[SatelliteMicNumber]:
-    return [SatelliteMicNumber(session, spec) for spec in _SPECS]
+_RESET_ATTRS = {
+    "_speech_threshold": "speech_threshold",
+    "_vad_timeout_seconds": "vad_timeout_seconds",
+    "_silence_seconds": "silence_seconds",
+    "_command_seconds": "command_seconds",
+    "_before_command_speech_threshold": "before_command_speech_threshold",
+    "_vad_mode": "vad_mode",
+    "_before_command_timeout_seconds": "before_command_timeout_seconds",
+    "_noise_suppression_level": "noise_suppression_level",
+    "_auto_gain_dbfs": "auto_gain_dbfs",
+    "_volume_multiplier": "volume_multiplier",
+    "_trigger_timeout_seconds": "trigger_timeout_seconds",
+}
+
+
+class SatelliteMicReset(ButtonEntity):
+    """Reset a satellite to global defaults (deletes its SQLite row)."""
+
+    _attr_should_poll = False
+    _attr_entity_category = EntityCategory.CONFIG
+    _attr_icon = "mdi:restore"
+
+    def __init__(self, session: SatSession) -> None:
+        self._session = session
+        self._attr_unique_id = f"satellite_audio_{session.mac}_mic_reset"
+        self._attr_name = f"{session.name} Сброс микрофона"
+        self._attr_device_info = DeviceInfo(
+            connections={(dr.CONNECTION_NETWORK_MAC, session.mac)}
+        )
+
+    @property
+    def available(self) -> bool:
+        return self._session.available
+
+    @property
+    def extra_state_attributes(self) -> dict:
+        return {
+            "comment": "Удаляет персональные настройки платы (SQLite) и возвращает все коэффициенты к глобальным дефолтам conf_assist_pipeline.yaml на лету."
+        }
+
+    async def async_press(self) -> None:
+        hass = self.hass
+        entity_id = self._session.entity_id
+        try:
+            from homeassistant.components.assist_satellite.vad_settings_db import (
+                async_get_store,
+                get_pipeline_defaults,
+            )
+
+            store = await async_get_store(hass)
+            await hass.async_add_executor_job(store.delete, entity_id)
+            defaults = get_pipeline_defaults(hass)
+        except Exception:
+            _LOGGER.exception("Failed to reset mic settings for %s", entity_id)
+            return
+
+        from homeassistant.const import Platform
+        from homeassistant.helpers.entity_component import DATA_INSTANCES
+
+        component = hass.data.get(DATA_INSTANCES, {}).get(Platform.ASSIST_SATELLITE)
+        entity = component.get_entity(entity_id) if component is not None else None
+        if entity is None:
+            return
+        for attr, key in _RESET_ATTRS.items():
+            setattr(entity, attr, defaults[key])
+        entity.async_write_ha_state()
+        _LOGGER.info("Mic settings reset to defaults for %s", entity_id)
+
+
+def build_mic_entities(session: SatSession) -> list:
+    entities = [SatelliteMicNumber(session, spec) for spec in _SPECS]
+    entities.append(SatelliteMicReset(session))
+    return entities

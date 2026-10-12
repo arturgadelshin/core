@@ -47,6 +47,12 @@ Custom component `satellite_audio`: живое прослушивание ком
 | Шумоподавление 0-4 | 0–4 | noise_suppression_level | set_noise_suppression |
 | Автоусиление дБ 0-31 | 0–31 | auto_gain_dbfs | set_auto_gain |
 | Множитель громкости 0.1-30 | 0.1–30 | volume_multiplier | set_volume_multiplier |
+| **Сброс микрофона** (кнопка) | — | удаляет SQLite-строку платы | mic_reset |
+
+Кнопка «Сброс микрофона»: удаляет персональную строку платы из SQLite
+и возвращает ВСЕ параметры (микрофонные + VAD) к глобальным дефолтам
+`conf_assist_pipeline.yaml` на лету, без рестарта. Побочно лечит
+«заморозку VAD» у перекалиброванной платы. API: `action=mic_reset`.
 
 Ввод значения → сервис форка `assist_satellite.set_*`. Значения live —
 обновляются от атрибутов ассистента (подписка на state changes).

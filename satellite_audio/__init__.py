@@ -19,7 +19,7 @@ import voluptuous as vol
 
 from aioesphomeapi import VoiceAssistantEventType
 
-from homeassistant.components import number, switch
+from homeassistant.components import button, number, switch
 from homeassistant.components.media_player import MediaClass, MediaType
 from homeassistant.components.media_source.models import (
     BrowseMediaSource,
@@ -476,6 +476,7 @@ class SatelliteAudioManager:
         self.entities: dict[str, list[Entity]] = {}
         self.platform: EntityPlatform | None = None
         self.number_platform: EntityPlatform | None = None
+        self.button_platform: EntityPlatform | None = None
         self._remove_track: Callable[[], None] | None = None
 
     async def async_setup(self) -> None:
@@ -483,8 +484,11 @@ class SatelliteAudioManager:
         if component is None:
             raise HomeAssistantError("switch component is not loaded")
         await async_setup_component(self.hass, number.DOMAIN, {})
+        await async_setup_component(self.hass, button.DOMAIN, {})
         if self.hass.data[DATA_INSTANCES].get(number.DOMAIN) is None:
             raise HomeAssistantError("number component is not loaded")
+        if self.hass.data[DATA_INSTANCES].get(button.DOMAIN) is None:
+            raise HomeAssistantError("button component is not loaded")
         self.platform = EntityPlatform(
             hass=self.hass,
             logger=_LOGGER,
@@ -498,6 +502,15 @@ class SatelliteAudioManager:
             hass=self.hass,
             logger=_LOGGER,
             domain=number.DOMAIN,
+            platform_name=DOMAIN,
+            platform=None,
+            scan_interval=timedelta(seconds=30),
+            entity_namespace=None,
+        )
+        self.button_platform = EntityPlatform(
+            hass=self.hass,
+            logger=_LOGGER,
+            domain=button.DOMAIN,
             platform_name=DOMAIN,
             platform=None,
             scan_interval=timedelta(seconds=30),
@@ -619,6 +632,7 @@ class SatelliteAudioManager:
         new_sessions = []
         new_entities = []
         new_number_entities = []
+        new_button_entities = []
         for entity_id, entry_id, mac, name, device_id in found:
             if entity_id in self.sessions:
                 self.sessions[entity_id].device_id = device_id
@@ -642,12 +656,15 @@ class SatelliteAudioManager:
                 *mic_entities,
             ]
             new_entities.extend((listen_entity, record_entity))
-            new_number_entities.extend(mic_entities)
+            new_number_entities.extend(mic_entities[:-1])
+            new_button_entities.append(mic_entities[-1])
 
         if new_entities and self.platform is not None:
             await self.platform.async_add_entities(new_entities)
         if new_number_entities and self.number_platform is not None:
             await self.number_platform.async_add_entities(new_number_entities)
+        if new_button_entities and self.button_platform is not None:
+            await self.button_platform.async_add_entities(new_button_entities)
 
         if new_sessions:
             ent_reg = er.async_get(self.hass)
@@ -678,11 +695,12 @@ class SatelliteAudioManager:
                     ent_reg.async_remove(entry.entity_id)
 
         _LOGGER.info(
-            "reconcile: %d found, %d new sessions, added %d switch / %d number entities",
+            "reconcile: %d found, %d new sessions, added %d switch / %d number / %d button entities",
             len(found),
             len(new_sessions),
             len(new_entities),
             len(new_number_entities),
+            len(new_button_entities),
         )
 
         self._assert_panel_urls()

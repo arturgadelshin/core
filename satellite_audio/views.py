@@ -384,7 +384,7 @@ class ControlView(HomeAssistantView):
         entity_id = data.get("entity_id")
         action = data.get("action")
         enabled = bool(data.get("enabled"))
-        if action not in (LISTEN, RECORD, "mic"):
+        if action not in (LISTEN, RECORD, "mic", "mic_reset"):
             return self.json_message("unknown action", status_code=400)
         session = manager.sessions.get(entity_id)
         if session is None:
@@ -394,6 +394,15 @@ class ControlView(HomeAssistantView):
                 await session.set_listen(enabled)
             elif action == RECORD:
                 await session.set_record(enabled)
+            elif action == "mic_reset":
+                from .mic import SatelliteMicReset
+
+                for entity in manager.entities.get(entity_id, []):
+                    if isinstance(entity, SatelliteMicReset):
+                        await entity.async_press()
+                        break
+                else:
+                    return self.json_message("reset entity not found", status_code=404)
             else:
                 from .mic import parse_value
 
