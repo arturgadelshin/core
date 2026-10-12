@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import array
 import asyncio
 import struct
 from pathlib import Path
@@ -9,6 +10,81 @@ from aiohttp import web
 from homeassistant.components.http import HomeAssistantView
 
 from . import DOMAIN, LISTEN, RECORD, RECORDINGS_DIR, SatelliteAudioManager
+
+try:
+    from pyspeex_noise import AudioProcessor
+except ImportError:
+    AudioProcessor = None
+
+_SPEEX_CHUNK = 320
+
+
+class _ProcessedStream:
+    """Apply assistant-side ns/ag/vol to a live mic stream."""
+
+    def __init__(self, hass, entity_id: str) -> None:
+        self._hass = hass
+        self._entity_id = entity_id
+        self._settings: tuple | None = None
+        self._processor = None
+        self._volume = 1.0
+        self._buffer = bytearray()
+        self._counter = 0
+
+    def _apply(self, ns: int, ag: int, vol: float) -> None:
+        agc = ag * 300
+        ns_level = ns * -15
+        self._processor = (
+            AudioProcessor(agc, ns_level) if (agc != 0 or ns_level != 0) else None
+        )
+        self._volume = vol
+        self._settings = (ns, ag, vol)
+
+    def _refresh(self) -> None:
+        from .mic import assist_attributes
+
+        attrs = assist_attributes(self._hass, self._entity_id)
+        try:
+            ns = int(attrs.get("noise_suppression_level", 0) or 0)
+        except (TypeError, ValueError):
+            ns = 0
+        try:
+            ag = int(attrs.get("auto_gain_dbfs", 0) or 0)
+        except (TypeError, ValueError):
+            ag = 0
+        try:
+            vol = float(attrs.get("volume_multiplier", 1.0) or 1.0)
+        except (TypeError, ValueError):
+            vol = 1.0
+        if (ns, ag, vol) != self._settings:
+            self._apply(ns, ag, vol)
+
+    def feed(self, chunk: bytes) -> bytes:
+        self._counter += 1
+        if self._settings is None or self._counter % 32 == 0:
+            self._refresh()
+        out = bytearray()
+        if self._processor is not None:
+            self._buffer.extend(chunk)
+            while len(self._buffer) >= _SPEEX_CHUNK:
+                out.extend(
+                    self._processor.Process10ms(
+                        bytes(self._buffer[:_SPEEX_CHUNK])
+                    ).audio
+                )
+                del self._buffer[:_SPEEX_CHUNK]
+        else:
+            out.extend(chunk)
+        if self._volume != 1.0 and out:
+            scaled = array.array(
+                "h",
+                (
+                    max(-32768, min(32767, int(value * self._volume)))
+                    for value in array.array("h", out)
+                ),
+            ).tobytes()
+            return scaled
+        return bytes(out)
 
 WAV_HEADER = struct.pack(
     "<4sI4s4sIHHIIHH4sI",
@@ -64,6 +140,7 @@ h1{font-size:18px}
 button{border:0;border-radius:8px;padding:10px 16px;font-size:15px;margin-right:8px;cursor:pointer}
 .l-on{background:#4caf50}.l-off{background:#607080}
 .r-on{background:#e53935}.r-off{background:#607080}
+.a-on{background:#7e57c2}.a-off{background:#607080}
 .meter{height:8px;background:#2a313a;border-radius:4px;margin-top:12px;overflow:hidden}
 .meter div{height:100%;width:0;background:#4caf50;border-radius:4px}
 .meta{font-size:12px;color:#9aa4b2;margin-top:8px}
@@ -77,6 +154,7 @@ button{border:0;border-radius:8px;padding:10px 16px;font-size:15px;margin-right:
 <script>
 const SCOPE = new URLSearchParams(location.search).get('satellite');
 const players = {};
+const asrMode = {};
 let audioCtx = null;
 
 function ensureCtx() {
@@ -100,17 +178,19 @@ function tryResume() {
 
 function connectStream(sat, card) {
   const key = sat.entity_id;
-  if (players[key] && players[key].url === sat.live_url && players[key].open) return;
+  const processed = !!asrMode[key];
+  const wsPath = sat.live_url.replace('/live/', '/ws/') + (processed ? '?processed=1' : '');
+  if (players[key] && players[key].url === wsPath && players[key].open) return;
   disconnectStream(key);
   const ctx = ensureCtx();
-  const wsUrl = (location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host + sat.live_url.replace('/live/', '/ws/');
+  const wsUrl = (location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host + wsPath;
   const ws = new WebSocket(wsUrl);
   ws.binaryType = 'arraybuffer';
-  const st = {url: sat.live_url, ws: ws, open: true, nextTime: 0, blocked: null, meter: card.querySelector('.meter div'), state: card.querySelector('.state')};
+  const st = {url: wsPath, ws: ws, open: true, nextTime: 0, blocked: null, meter: card.querySelector('.meter div'), state: card.querySelector('.state')};
   players[key] = st;
   const setState = (text, cls) => { st.state.textContent = text; st.state.className = 'state ' + cls; };
   setState('подключение к эфиру…', '');
-  ws.onopen = () => setState('эфир идёт', 'ok');
+  ws.onopen = () => setState(processed ? 'эфир идёт (как ассистент)' : 'эфир идёт', 'ok');
   ws.onmessage = (ev) => {
     const blocked = ctx.state !== 'running';
     if (st.blocked !== blocked) {
@@ -195,11 +275,17 @@ function render(state) {
       card.innerHTML = '<div class="name"></div>' +
         '<button class="listen"></button>' +
         '<button class="record"></button>' +
+        '<button class="asr"></button>' +
         '<div class="meter"><div></div></div>' +
         '<div class="state"></div>' +
         '<div class="meta"></div>';
       card.querySelector('.listen').onclick = () => control(sat.entity_id, 'listen', !sat.listening);
       card.querySelector('.record').onclick = () => control(sat.entity_id, 'record', !sat.recording);
+      card.querySelector('.asr').onclick = () => {
+        asrMode[sat.entity_id] = !asrMode[sat.entity_id];
+        disconnectStream(sat.entity_id);
+        refresh();
+      };
       root.appendChild(card);
     }
     card.querySelector('.name').innerHTML = sat.name +
@@ -211,6 +297,11 @@ function render(state) {
     const rb = card.querySelector('.record');
     rb.textContent = sat.recording ? 'Остановить запись' : 'Записать';
     rb.className = 'record ' + (sat.recording ? 'r-on' : 'r-off');
+    const ab = card.querySelector('.asr');
+    const asrOn = !!asrMode[sat.entity_id];
+    ab.textContent = asrOn ? 'Обычный эфир (raw)' : 'Слушать как ассистент';
+    ab.className = 'asr ' + (asrOn ? 'a-on' : 'a-off');
+    ab.title = 'Эфир через обработку ассистента: шумоподавление + автоусиление + множитель громкости';
     const meta = [];
     if (sat.recording_seconds) meta.push('пишется ' + fmt(sat.recording_seconds));
     if (sat.last_recording_file) meta.push('последняя: ' + sat.last_recording_file.split('/').pop() + ' (' + fmt(sat.last_recording_seconds) + ')');
@@ -375,6 +466,13 @@ class LiveSocketView(HomeAssistantView):
         if session is None:
             await websocket.close(code=4004)
             return websocket
+        processed = request.query.get("processed") == "1"
+        stream = None
+        if processed:
+            if AudioProcessor is None:
+                await websocket.close(code=1011)
+                return websocket
+            stream = _ProcessedStream(request.app["hass"], session.entity_id)
         live_queue: asyncio.Queue[bytes | None] = asyncio.Queue(maxsize=300)
         session.live_queues.add(live_queue)
         try:
@@ -383,6 +481,10 @@ class LiveSocketView(HomeAssistantView):
                 if chunk is None:
                     await websocket.close()
                     break
+                if stream is not None:
+                    chunk = stream.feed(chunk)
+                    if not chunk:
+                        continue
                 await websocket.send_bytes(chunk)
         except (asyncio.CancelledError, ConnectionResetError):
             pass
