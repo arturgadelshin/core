@@ -236,7 +236,7 @@ class StatusView(HomeAssistantView):
 
     async def get(self, request: web.Request) -> web.Response:
         manager = _manager(request)
-        from .mic import SatelliteAudioMic
+        from .mic import mic_status
 
         satellites = []
         for session in manager.sessions.values():
@@ -256,10 +256,7 @@ class StatusView(HomeAssistantView):
                     else None
                 ),
             }
-            for entity in manager.entities.get(session.entity_id, []):
-                if isinstance(entity, SatelliteAudioMic):
-                    entry["mic"] = entity.extra_state_attributes
-                    break
+            entry["mic"] = mic_status(request.app["hass"], session.entity_id)
             if session.listening and session.live_token:
                 entry["live_url"] = f"/api/satellite_audio/live/{session.live_token}"
             if session.recording and session.writer is not None:
@@ -290,17 +287,18 @@ class ControlView(HomeAssistantView):
             elif action == RECORD:
                 await session.set_record(enabled)
             else:
-                from .mic import SatelliteAudioMic
+                from .mic import parse_value
 
                 value = data.get("value")
                 if not isinstance(value, str) or not value.strip():
                     return self.json_message("value is required", status_code=400)
-                for entity in manager.entities.get(entity_id, []):
-                    if isinstance(entity, SatelliteAudioMic):
-                        await entity.async_set_value(value)
-                        break
-                else:
-                    return self.json_message("mic entity not found", status_code=404)
+                for service, payload in parse_value(value):
+                    await request.app["hass"].services.async_call(
+                        "assist_satellite",
+                        service,
+                        {"entity_id": entity_id, "value": payload},
+                        blocking=True,
+                    )
         except Exception:
             return self.json_message("action failed", status_code=409)
         return self.json({"ok": True})

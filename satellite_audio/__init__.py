@@ -19,7 +19,7 @@ import voluptuous as vol
 
 from aioesphomeapi import VoiceAssistantEventType
 
-from homeassistant.components import switch, text
+from homeassistant.components import number, select, switch
 from homeassistant.components.media_player import MediaClass, MediaType
 from homeassistant.components.media_source.models import (
     BrowseMediaSource,
@@ -461,17 +461,20 @@ class SatelliteAudioManager:
         self.sessions: dict[str, SatSession] = {}
         self.entities: dict[str, list[Entity]] = {}
         self.platform: EntityPlatform | None = None
-        self.text_platform: EntityPlatform | None = None
+        self.number_platform: EntityPlatform | None = None
+        self.select_platform: EntityPlatform | None = None
         self._remove_track: Callable[[], None] | None = None
 
     async def async_setup(self) -> None:
         component = self.hass.data[DATA_INSTANCES].get(switch.DOMAIN)
         if component is None:
             raise HomeAssistantError("switch component is not loaded")
-        await async_setup_component(self.hass, text.DOMAIN, {})
-        text_component = self.hass.data[DATA_INSTANCES].get(text.DOMAIN)
-        if text_component is None:
-            raise HomeAssistantError("text component is not loaded")
+        await async_setup_component(self.hass, number.DOMAIN, {})
+        await async_setup_component(self.hass, select.DOMAIN, {})
+        if self.hass.data[DATA_INSTANCES].get(number.DOMAIN) is None:
+            raise HomeAssistantError("number component is not loaded")
+        if self.hass.data[DATA_INSTANCES].get(select.DOMAIN) is None:
+            raise HomeAssistantError("select component is not loaded")
         self.platform = EntityPlatform(
             hass=self.hass,
             logger=_LOGGER,
@@ -481,10 +484,19 @@ class SatelliteAudioManager:
             scan_interval=timedelta(seconds=30),
             entity_namespace=None,
         )
-        self.text_platform = EntityPlatform(
+        self.number_platform = EntityPlatform(
             hass=self.hass,
             logger=_LOGGER,
-            domain=text.DOMAIN,
+            domain=number.DOMAIN,
+            platform_name=DOMAIN,
+            platform=None,
+            scan_interval=timedelta(seconds=30),
+            entity_namespace=None,
+        )
+        self.select_platform = EntityPlatform(
+            hass=self.hass,
+            logger=_LOGGER,
+            domain=select.DOMAIN,
             platform_name=DOMAIN,
             platform=None,
             scan_interval=timedelta(seconds=30),
@@ -590,7 +602,7 @@ class SatelliteAudioManager:
         return found
 
     async def _reconcile(self) -> None:
-        from .mic import SatelliteAudioMic
+        from .mic import build_mic_entities
         from .switch import SatelliteAudioSwitch
 
         found = await self._satellite_registry_entries()
@@ -605,7 +617,8 @@ class SatelliteAudioManager:
 
         new_sessions = []
         new_entities = []
-        new_text_entities = []
+        new_number_entities = []
+        new_select_entities = []
         for entity_id, entry_id, mac, name, device_id in found:
             if entity_id in self.sessions:
                 self.sessions[entity_id].device_id = device_id
@@ -622,18 +635,36 @@ class SatelliteAudioManager:
             new_sessions.append((session, device_id))
             listen_entity = SatelliteAudioSwitch(session, LISTEN)
             record_entity = SatelliteAudioSwitch(session, RECORD)
-            mic_entity = SatelliteAudioMic(session)
-            self.entities[entity_id] = [listen_entity, record_entity, mic_entity]
+            mic_entities = build_mic_entities(session)
+            self.entities[entity_id] = [
+                listen_entity,
+                record_entity,
+                *mic_entities,
+            ]
             new_entities.extend((listen_entity, record_entity))
-            new_text_entities.append(mic_entity)
+            new_number_entities.extend(mic_entities[:-1])
+            new_select_entities.append(mic_entities[-1])
+            legacy_entity_id = er.async_get(self.hass).async_get_entity_id(
+                "text", DOMAIN, f"satellite_audio_{mac}_mic"
+            )
+            if legacy_entity_id is not None:
+                er.async_get(self.hass).async_remove(legacy_entity_id)
 
         if new_entities and self.platform is not None:
             await self.platform.async_add_entities(new_entities)
-        if new_text_entities and self.text_platform is not None:
-            await self.text_platform.async_add_entities(new_text_entities)
-        if (new_entities or new_text_entities) and any(
-            device_id for _, device_id in new_sessions
-        ):
+        if new_number_entities and self.number_platform is not None:
+            await self.number_platform.async_add_entities(new_number_entities)
+        if new_select_entities and self.select_platform is not None:
+            await self.select_platform.async_add_entities(new_select_entities)
+        _LOGGER.info(
+            "reconcile: %d found, %d new sessions, added %d switch / %d number / %d select entities",
+            len(found),
+            len(new_sessions),
+            len(new_entities),
+            len(new_number_entities),
+            len(new_select_entities),
+        )
+        if new_sessions:
             ent_reg = er.async_get(self.hass)
             for session, device_id in new_sessions:
                 if not device_id:

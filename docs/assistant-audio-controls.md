@@ -36,39 +36,34 @@ Custom component `satellite_audio`: живое прослушивание ком
 Файлы раздаются через `/api/satellite_audio/file/<плата>/<файл>`
 (aiohttp FileResponse — Range-запросы = перемотка).
 
-## Поле «Микрофон» (коэффициенты)
+## Поля «Микрофон» (коэффициенты — каждое отдельно)
 
-Text-сущность `<плата> Микрофон` (категория «Настройки», на странице
-устройства). Значение — снимок всех 11 параметров хост-обработки форка:
+На странице устройства платы (категория «Настройки») — 11 number-полей
++ 1 select. Каждое поле: свой диапазон, имя с пояснением, атрибут
+`comment` с полным описанием, атрибут `firmware` с коэффициентами прошивки.
 
-```
-ns=0 ag=0 vol=1 speech=0.4 bspeech=0.5 silence=2 cmd=1.5 vadto=30 bct=5 trigto=5 vadmode=per_pipeline
-```
+| Поле | Диапазон | Атрибут ассистента | Сервис |
+|------|----------|--------------------|--------|
+| Шумоподавление 0-4 | 0–4 | noise_suppression_level | set_noise_suppression |
+| Автоусиление дБ 0-31 | 0–31 | auto_gain_dbfs | set_auto_gain |
+| Множитель громкости 0.1-30 | 0.1–30 | volume_multiplier | set_volume_multiplier |
+| VAD порог речи | 0.1–1 | speech_threshold | set_speech_threshold |
+| VAD порог начала речи | 0.05–0.9 | before_command_speech_threshold | set_before_command_speech_threshold |
+| VAD тишина до обрыва с | 0.3–10 | silence_seconds | set_silence_seconds |
+| VAD мин. команда с | 0.3–10 | command_seconds | set_command_seconds |
+| VAD макс. запись с | 1–60 | vad_timeout_seconds | set_vad_timeout |
+| VAD ожидание речи с | 1–30 | before_command_timeout_seconds | set_before_command_timeout |
+| VAD таймаут триггера с | 1–30 | trigger_timeout_seconds | set_trigger_timeout |
+| VAD режим | singleton / per_pipeline | vad_mode | set_vad_mode |
 
-Редактирование: меняешь нужные `k=v` (короткие или полные имена),
-остальные не трогаешь → применяются **только указанные** ключи через
-сервисы форка `assist_satellite.set_*`. Диапазоны и ключи:
-
-| Ключ | Полное имя | Диапазон | Сервис |
-|------|-----------|----------|--------|
-| `ns` | noise_suppression_level | 0–4 | set_noise_suppression |
-| `ag` | auto_gain_dbfs | 0–31 | set_auto_gain |
-| `vol` | volume_multiplier | 0.1–30 | set_volume_multiplier |
-| `speech` | speech_threshold | 0.1–1.0 | set_speech_threshold |
-| `bspeech` | before_command_speech_threshold | 0.05–0.9 | set_before_command_speech_threshold |
-| `silence` | silence_seconds | 0.3–10 | set_silence_seconds |
-| `cmd` | command_seconds | 0.3–10 | set_command_seconds |
-| `vadto` | vad_timeout_seconds | 1–60 | set_vad_timeout |
-| `bct` | before_command_timeout_seconds | 1–30 | set_before_command_timeout |
-| `trigto` | trigger_timeout_seconds | 1–30 | set_trigger_timeout |
-| `vadmode` | — | singleton / per_pipeline | set_vad_mode |
-
+Ввод значения → сервис форка `assist_satellite.set_*`. Значения live —
+обновляются от атрибутов ассистента (подписка на state changes).
 Хранение — как у форка: SQLite `assist_satellite_settings/vad_settings.db`
 per-satellite, дефолты `conf_assist_pipeline.yaml`.
 
-Атрибут `firmware` — коэффициенты прошивки (read-only, см. ниже).
-API: `POST /api/satellite_audio/control` c `action=mic, value=<k=v …>`,
-текущие значения — в `GET /api/satellite_audio/status` (блок `mic`).
+API: `POST /api/satellite_audio/control` c `action=mic, value=<k=v …>`
+(короткие или полные имена ключей), текущие значения — в
+`GET /api/satellite_audio/status` (блок `mic`).
 
 ## Коэффициенты прошивки (read-only)
 
@@ -147,8 +142,8 @@ Runtime-действий в esphome-cx нет (только компиляция
 - [x] Запись 8.2с → 264 КБ WAV, поверх активной прослушки
 - [x] Выключение: состояние off стабильное, RUN_END уходит
 - [x] Панель `/api/satellite_audio/panel` рендерится (+ режим ?satellite=)
-- [x] Поле «Микрофон»: ns=2 ag=10 → атрибуты ассистента + строка в SQLite;
-  невалидные значения (ns=9, ag=abc, foo=1) отклоняются с пояснением
+- [x] Поля «Микрофон»: 11 number + 1 select созданы и привязаны к устройству;
+  ns=2 speech=0.5 → атрибуты ассистента обновились; сброс OK
 - [x] Глобус: configuration_url → panel?satellite=… на устройстве платы
 - [x] Прошивка: text_sensor «Микрофон прошивка» виден, атрибут firmware
   поля «Микрофон» = mic_gain=-38.0 va_gain=1 mww_gain=2 prob=0.8 …
