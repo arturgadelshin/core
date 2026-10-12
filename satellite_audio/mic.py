@@ -63,6 +63,56 @@ _SPECS = [
 
 _ALIASES = {spec["full"]: spec["short"] for spec in _SPECS}
 
+_HW_SPECS = [
+    {
+        "key": "mic_gain",
+        "min": 0,
+        "max": 30,
+        "step": 1,
+        "unit": None,
+        "icon": "mdi:amplifier",
+        "name": "Усиление кодека 0-30",
+        "comment": "Аппаратный gain кодека CX20921 (регистр 0-30). Меняется на лету: применяется сразу при активном микрофоне. Сохраняется в памяти платы, переживает перезагрузку.",
+    },
+    {
+        "key": "va_gain",
+        "min": 1,
+        "max": 64,
+        "step": 1,
+        "unit": "×",
+        "icon": "mdi:tune-vertical",
+        "name": "Усиление ассистента 1-64",
+        "comment": "gain_factor источника микрофона голосового ассистента: умножение сэмплов на устройстве до отправки в HA. Применяется со следующего разговора, сохраняется в памяти платы.",
+    },
+    {
+        "key": "mww_gain",
+        "min": 1,
+        "max": 64,
+        "step": 1,
+        "unit": "×",
+        "icon": "mdi:ear",
+        "name": "Усиление wake word 1-64",
+        "comment": "gain_factor источника микрофона micro_wake_word (детект wake word на устройстве). Применяется сразу, сохраняется в памяти платы.",
+    },
+]
+
+_HW_DEFAULTS = {"mic_gain": 0, "va_gain": 1, "mww_gain": 2}
+_HW_LIMITS = {"mic_gain": (0, 30), "va_gain": (1, 64), "mww_gain": (1, 64)}
+
+
+def firmware_sensor_entity_id(hass, entity_id: str) -> str | None:
+    ent_reg = er.async_get(hass)
+    entry = ent_reg.async_get(entity_id)
+    if entry is None or entry.device_id is None:
+        return None
+    for candidate in ent_reg.entities.values():
+        if candidate.domain != "sensor" or candidate.device_id != entry.device_id:
+            continue
+        if "прошивк" not in (candidate.original_name or "").lower():
+            continue
+        return candidate.entity_id
+    return None
+
 
 def firmware_settings(hass, entity_id: str) -> str | None:
     ent_reg = er.async_get(hass)
@@ -245,6 +295,117 @@ _RESET_ATTRS = {
 }
 
 
+def parse_hw_gains(hass, entity_id: str) -> dict:
+    result = dict(_HW_DEFAULTS)
+    firmware = firmware_settings(hass, entity_id)
+    if firmware:
+        for token in firmware.split():
+            key, sep, raw = token.partition("=")
+            if sep and key in result:
+                try:
+                    result[key] = int(float(raw))
+                except ValueError:
+                    pass
+    for key, (low, high) in _HW_LIMITS.items():
+        result[key] = max(low, min(high, result[key]))
+    return result
+
+
+def _device_node_name(hass, session: SatSession) -> str | None:
+    entry = hass.config_entries.async_get_entry(session.esphome_entry_id)
+    if entry is None:
+        return None
+    runtime_data = getattr(entry, "runtime_data", None)
+    device_info = getattr(runtime_data, "device_info", None)
+    name = getattr(device_info, "name", None)
+    return name or entry.title
+
+
+async def apply_hw_gains(hass, session: SatSession, overrides: dict) -> dict:
+    from homeassistant.exceptions import HomeAssistantError
+
+    gains = parse_hw_gains(hass, session.entity_id)
+    for key in _HW_DEFAULTS:
+        if key in overrides:
+            gains[key] = int(overrides[key])
+    for key, (low, high) in _HW_LIMITS.items():
+        gains[key] = max(low, min(high, gains[key]))
+    node = _device_node_name(hass, session)
+    if node is None:
+        raise HomeAssistantError("esphome entry not found")
+    service_name = f"{node.replace('-', '_')}_set_mic_hw"
+    if not hass.services.has_service("esphome", service_name):
+        raise HomeAssistantError(
+            f"Прошивка платы не поддерживает {service_name} — требуется перепрошивка"
+        )
+    await hass.services.async_call("esphome", service_name, gains, blocking=True)
+    return gains
+
+
+class SatelliteHwNumber(NumberEntity):
+    """One hardware mic gain of a satellite, applied on the device."""
+
+    _attr_should_poll = False
+    _attr_entity_category = EntityCategory.CONFIG
+    _attr_mode = NumberMode.BOX
+
+    def __init__(self, session: SatSession, spec: dict) -> None:
+        self._session = session
+        self._spec = spec
+        self._remove_track = None
+        self._attr_unique_id = f"satellite_audio_{session.mac}_hw_{spec['key']}"
+        self._attr_name = f"{session.name} {spec['name']}"
+        self._attr_icon = spec["icon"]
+        self._attr_native_min_value = spec["min"]
+        self._attr_native_max_value = spec["max"]
+        self._attr_native_step = spec["step"]
+        self._attr_native_unit_of_measurement = spec["unit"]
+        self._attr_device_info = DeviceInfo(
+            connections={(dr.CONNECTION_NETWORK_MAC, session.mac)}
+        )
+
+    @property
+    def available(self) -> bool:
+        return self._session.available
+
+    @property
+    def native_value(self) -> float | None:
+        return parse_hw_gains(self.hass, self._session.entity_id).get(
+            self._spec["key"]
+        )
+
+    @property
+    def extra_state_attributes(self) -> dict:
+        return {
+            "comment": self._spec["comment"],
+            "level": "прошивка (применяется на устройстве, сохраняется в NVS платы)",
+        }
+
+    async def async_added_to_hass(self) -> None:
+        targets = [self._session.entity_id]
+        sensor_id = firmware_sensor_entity_id(self.hass, self._session.entity_id)
+        if sensor_id:
+            targets.append(sensor_id)
+        self._remove_track = async_track_state_change_event(
+            self.hass, targets, self._on_sat_event
+        )
+
+    @callback
+    def _on_sat_event(self, event) -> None:
+        self.async_write_ha_state()
+
+    async def async_will_remove_from_hass(self) -> None:
+        if self._remove_track is not None:
+            self._remove_track()
+            self._remove_track = None
+
+    async def async_set_native_value(self, value: float) -> None:
+        await apply_hw_gains(
+            self.hass, self._session, {self._spec["key"]: int(round(value))}
+        )
+        self.async_write_ha_state()
+
+
 class SatelliteMicReset(ButtonEntity):
     """Reset a satellite to global defaults (deletes its SQLite row)."""
 
@@ -301,5 +462,6 @@ class SatelliteMicReset(ButtonEntity):
 
 def build_mic_entities(session: SatSession) -> list:
     entities = [SatelliteMicNumber(session, spec) for spec in _SPECS]
+    entities.extend(SatelliteHwNumber(session, spec) for spec in _HW_SPECS)
     entities.append(SatelliteMicReset(session))
     return entities

@@ -344,7 +344,7 @@ class StatusView(HomeAssistantView):
 
     async def get(self, request: web.Request) -> web.Response:
         manager = _manager(request)
-        from .mic import mic_status
+        from .mic import mic_status, parse_hw_gains
 
         satellites = []
         for session in manager.sessions.values():
@@ -363,6 +363,8 @@ class StatusView(HomeAssistantView):
                     if session.last_recording_path is not None
                     else None
                 ),
+                "mic": mic_status(request.app["hass"], session.entity_id),
+                "mic_hw": parse_hw_gains(request.app["hass"], session.entity_id),
             }
             entry["mic"] = mic_status(request.app["hass"], session.entity_id)
             if session.listening and session.live_token:
@@ -384,7 +386,7 @@ class ControlView(HomeAssistantView):
         entity_id = data.get("entity_id")
         action = data.get("action")
         enabled = bool(data.get("enabled"))
-        if action not in (LISTEN, RECORD, "mic", "mic_reset"):
+        if action not in (LISTEN, RECORD, "mic", "mic_reset", "mic_hw"):
             return self.json_message("unknown action", status_code=400)
         session = manager.sessions.get(entity_id)
         if session is None:
@@ -403,6 +405,13 @@ class ControlView(HomeAssistantView):
                         break
                 else:
                     return self.json_message("reset entity not found", status_code=404)
+            elif action == "mic_hw":
+                from .mic import apply_hw_gains
+
+                overrides = data.get("values")
+                if not isinstance(overrides, dict):
+                    return self.json_message("values is required", status_code=400)
+                await apply_hw_gains(request.app["hass"], session, overrides)
             else:
                 from .mic import parse_value
 
