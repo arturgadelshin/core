@@ -466,10 +466,25 @@ class LiveSocketView(HomeAssistantView):
         if session is None:
             await websocket.close(code=4004)
             return websocket
+
+        async def _read_control_frames() -> None:
+            try:
+                async for msg in websocket:
+                    if msg.type in (
+                        web.WSMsgType.CLOSE,
+                        web.WSMsgType.CLOSED,
+                        web.WSMsgType.CLOSING,
+                    ):
+                        break
+            except (asyncio.CancelledError, ConnectionResetError):
+                pass
+
+        reader_task = asyncio.create_task(_read_control_frames())
         processed = request.query.get("processed") == "1"
         stream = None
         if processed:
             if AudioProcessor is None:
+                reader_task.cancel()
                 await websocket.close(code=1011)
                 return websocket
             stream = _ProcessedStream(request.app["hass"], session.entity_id)
@@ -489,7 +504,12 @@ class LiveSocketView(HomeAssistantView):
         except (asyncio.CancelledError, ConnectionResetError):
             pass
         finally:
+            reader_task.cancel()
             session.live_queues.discard(live_queue)
+            try:
+                await websocket.close()
+            except (asyncio.CancelledError, ConnectionResetError, RuntimeError):
+                pass
         return websocket
 
 

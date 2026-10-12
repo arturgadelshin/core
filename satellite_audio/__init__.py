@@ -54,7 +54,9 @@ FIRST_AUDIO_TIMEOUT = 12.0
 LIVE_QUEUE_SIZE = 100
 ANNOUNCE_TIMEOUT = 12.0
 RETRIGGER_LIMIT = 8
-STALE_AUDIO_TIMEOUT = 4.0
+STALE_AUDIO_TIMEOUT = 3.0
+REAL_FEED_WINDOW = 0.6
+REAL_QUEUE_CAP = 60
 
 _TERMINAL_EVENTS = frozenset(
     {
@@ -73,6 +75,10 @@ _LOGGER = logging.getLogger(__name__)
 def _sanitize(name: str) -> str:
     cleaned = re.sub(r"[^0-9A-Za-z_-]+", "_", name).strip("_")
     return cleaned or "unknown"
+
+
+def _stall_reconnect_noop() -> None:
+    return None
 
 
 class WavWriter:
@@ -117,6 +123,7 @@ class _TeeQueue:
         self._session = session
         self._active = True
         self._waiting = 0
+        self._last_get_at = 0.0
 
     def detach(self) -> None:
         self._active = False
@@ -124,7 +131,10 @@ class _TeeQueue:
     def put_nowait(self, item) -> None:
         if self._active and item is not None:
             self._session._on_audio(item)
-        if self._waiting > 0:
+        consumer_alive = (self._waiting > 0) or (
+            (time.monotonic() - self._last_get_at) < REAL_FEED_WINDOW
+        )
+        if consumer_alive and self._real_queue.qsize() < REAL_QUEUE_CAP:
             self._real_queue.put_nowait(item)
 
     async def get(self):
@@ -133,6 +143,7 @@ class _TeeQueue:
             return await self._real_queue.get()
         finally:
             self._waiting -= 1
+            self._last_get_at = time.monotonic()
 
     def empty(self) -> bool:
         return self._real_queue.empty()
@@ -291,6 +302,7 @@ class SatSession:
         entity._audio_queue = _TeeQueue(self._real_queue, self)
         self._orig_send_event = client.send_voice_assistant_event
         client.send_voice_assistant_event = self._wrap_send_event(self._orig_send_event)
+        entity._async_reconnect_on_stall = _stall_reconnect_noop
         self._installed = True
         self._monitor_task = self.manager.hass.async_create_background_task(
             self._monitor(), f"satellite_audio_monitor_{self.entity_id}"
@@ -322,12 +334,14 @@ class SatSession:
         if monitor_task is not None:
             monitor_task.cancel()
         entity = self._satellite_entity()
-        if entity is not None and self._real_queue is not None:
-            tee = entity._audio_queue
-            entity._audio_queue = self._real_queue
-            if isinstance(tee, _TeeQueue):
-                tee.detach()
-            self._real_queue = None
+        if entity is not None:
+            entity.__dict__.pop("_async_reconnect_on_stall", None)
+            if self._real_queue is not None:
+                tee = entity._audio_queue
+                entity._audio_queue = self._real_queue
+                if isinstance(tee, _TeeQueue):
+                    tee.detach()
+                self._real_queue = None
         client = self.client
         if client is not None:
             if self._orig_send_event is not None:
