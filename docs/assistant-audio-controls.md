@@ -11,14 +11,20 @@ Custom component `satellite_audio`: живое прослушивание ком
 - **Запись** — вкл → поток пишется в WAV на сервере HA, выкл → файл
   финализируется. Формат 16 кГц / 16 бит / mono, 32 КБ/с (~115 МБ/час).
 - Обе кнопки одновременно — один стрим раздаётся в эфир и в файл.
+- **Поле «Микрофон»** — все коэффициенты ассистента одним текстом (см. ниже).
 
 ## Где кнопки
 
 - **Страница устройства платы в HA** — сущности «…Прослушивание» и «…Запись»
   привязаны к устройству платы (device_id через entity_registry).
+- **Глобус в шапке страницы устройства** (`configuration_url`) — открывает
+  персональную панель платы `panel?satellite=<entity_id>`. Компонент
+  переутверждает ссылку при каждом reconcile (esphome может затирать).
 - **Панель быстрого доступа** — `http://<ha>:8123/api/satellite_audio/panel`:
   список всех спутников, кнопки Слушать/Записать, WebAudio-плеер (WebSocket,
   работает в любом браузере и на телефоне), индикатор уровня.
+  С параметром `?satellite=<assist_satellite entity_id>` — карточка одной
+  платы (для флота из ~196 плат использовать только персональные ссылки).
 - **Встроенный медиа-браузер HA** («Медиа» в сайдбаре) → «Спутники — аудио»:
   все записи платы (кликабельны, играют встроенным плеером HA в браузере,
   с поддержкой перемотки) + пункт «Живой эфир» пока прослушивание включено.
@@ -29,6 +35,64 @@ Custom component `satellite_audio`: живое прослушивание ком
 Папка записей: `/config/recordings/<имя платы>/<дата-время>.wav`.
 Файлы раздаются через `/api/satellite_audio/file/<плата>/<файл>`
 (aiohttp FileResponse — Range-запросы = перемотка).
+
+## Поле «Микрофон» (коэффициенты)
+
+Text-сущность `<плата> Микрофон` (категория «Настройки», на странице
+устройства). Значение — снимок всех 11 параметров хост-обработки форка:
+
+```
+ns=0 ag=0 vol=1 speech=0.4 bspeech=0.5 silence=2 cmd=1.5 vadto=30 bct=5 trigto=5 vadmode=per_pipeline
+```
+
+Редактирование: меняешь нужные `k=v` (короткие или полные имена),
+остальные не трогаешь → применяются **только указанные** ключи через
+сервисы форка `assist_satellite.set_*`. Диапазоны и ключи:
+
+| Ключ | Полное имя | Диапазон | Сервис |
+|------|-----------|----------|--------|
+| `ns` | noise_suppression_level | 0–4 | set_noise_suppression |
+| `ag` | auto_gain_dbfs | 0–31 | set_auto_gain |
+| `vol` | volume_multiplier | 0.1–30 | set_volume_multiplier |
+| `speech` | speech_threshold | 0.1–1.0 | set_speech_threshold |
+| `bspeech` | before_command_speech_threshold | 0.05–0.9 | set_before_command_speech_threshold |
+| `silence` | silence_seconds | 0.3–10 | set_silence_seconds |
+| `cmd` | command_seconds | 0.3–10 | set_command_seconds |
+| `vadto` | vad_timeout_seconds | 1–60 | set_vad_timeout |
+| `bct` | before_command_timeout_seconds | 1–30 | set_before_command_timeout |
+| `trigto` | trigger_timeout_seconds | 1–30 | set_trigger_timeout |
+| `vadmode` | — | singleton / per_pipeline | set_vad_mode |
+
+Хранение — как у форка: SQLite `assist_satellite_settings/vad_settings.db`
+per-satellite, дефолты `conf_assist_pipeline.yaml`.
+
+Атрибут `firmware` — коэффициенты прошивки (read-only, см. ниже).
+API: `POST /api/satellite_audio/control` c `action=mic, value=<k=v …>`,
+текущие значения — в `GET /api/satellite_audio/status` (блок `mic`).
+
+## Коэффициенты прошивки (read-only)
+
+`gain_factor` (VA/mww), `mic_gain` кодека, `probability_cutoff`, прошивные
+`ns/ag/vol` **не передаются по API** —ESPHome их применяет на устройстве.
+Runtime-действий в esphome-cx нет (только компиляция). Для видимости в HA
+в test-board.yaml добавлен text_sensor «Микрофон прошивка» (значение —
+статическая строка `mic_gain=… va_gain=… mww_gain=… prob=… fw_ns=… fw_ag=… fw_vol=…`),
+компонент подтягивает его в атрибут `firmware` поля «Микрофон».
+Изменение = правка yaml + перепрошивка (сценарий ниже).
+
+### Прошивка платы через сервер (OTA через reverse-туннель)
+
+Плата на LAN 192.168.0.x недостижима с сервера. Рабочая цепочка:
+
+```
+1. Правка /home/green/esphome-cx/config/test-board.yaml (на сервере)
+2. docker exec esphome-cx esphome compile test-board.yaml
+3. На локальной машине: ssh -p 8222 -N -R 127.0.0.1:33232:192.168.0.115:3232 root@95.104.236.85
+4. На сервере: socat TCP-LISTEN:3232,bind=172.18.0.1,fork,reuseaddr TCP:127.0.0.1:33232 &
+   (172.18.0.1 — gateway docker-сети esphome-cx; port платы — 3232, esp-idf OTA)
+5. docker exec esphome-cx esphome upload test-board.yaml --device 172.18.0.1
+6. Убить socat и туннель
+```
 
 ## Архитектура (итоговая, v3)
 
@@ -82,9 +146,15 @@ Custom component `satellite_audio`: живое прослушивание ком
 - [x] Прослушка: 32 0748 байт за 10с (полные 32 КБ/с), стабильна >30с
 - [x] Запись 8.2с → 264 КБ WAV, поверх активной прослушки
 - [x] Выключение: состояние off стабильное, RUN_END уходит
-- [x] Панель `/api/satellite_audio/panel` рендерится
+- [x] Панель `/api/satellite_audio/panel` рендерится (+ режим ?satellite=)
+- [x] Поле «Микрофон»: ns=2 ag=10 → атрибуты ассистента + строка в SQLite;
+  невалидные значения (ns=9, ag=abc, foo=1) отклоняются с пояснением
+- [x] Глобус: configuration_url → panel?satellite=… на устройстве платы
+- [x] Прошивка: text_sensor «Микрофон прошивка» виден, атрибут firmware
+  поля «Микрофон» = mic_gain=-38.0 va_gain=1 mww_gain=2 prob=0.8 …
 - [ ] E2E руками: wake word после выключения (у юзера)
 - [ ] Тихий триггер: не слышно ли аудио при включении (у юзера)
+- [ ] E2E руками: поле «Микрофон» в UI (у юзера)
 
 ## Исходники и деплой
 

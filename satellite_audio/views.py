@@ -75,6 +75,7 @@ button{border:0;border-radius:8px;padding:10px 16px;font-size:15px;margin-right:
 <h1>Спутники — живое прослушивание и запись</h1>
 <div id="list">Загрузка…</div>
 <script>
+const SCOPE = new URLSearchParams(location.search).get('satellite');
 const players = {};
 let audioCtx = null;
 
@@ -159,11 +160,15 @@ function fmt(s) { return s ? ('' + Math.floor(s / 60) + ':' + String(Math.floor(
 
 function render(state) {
   const root = document.getElementById('list');
-  if (!state.satellites || !state.satellites.length) {
+  let sats = state.satellites || [];
+  if (SCOPE) {
+    sats = sats.filter(s => s.entity_id === SCOPE || s.name === SCOPE);
+    if (!sats.length) { root.textContent = 'Спутник не найден: ' + SCOPE; return; }
+  } else if (!sats.length) {
     root.textContent = 'Спутники не найдены';
     return;
   }
-  for (const sat of state.satellites) {
+  for (const sat of sats) {
     const cardId = 'card-' + sat.entity_id.replace(/\./g, '-');
     let card = document.getElementById(cardId);
     if (!card) {
@@ -231,6 +236,8 @@ class StatusView(HomeAssistantView):
 
     async def get(self, request: web.Request) -> web.Response:
         manager = _manager(request)
+        from .mic import SatelliteAudioMic
+
         satellites = []
         for session in manager.sessions.values():
             entry = {
@@ -249,6 +256,10 @@ class StatusView(HomeAssistantView):
                     else None
                 ),
             }
+            for entity in manager.entities.get(session.entity_id, []):
+                if isinstance(entity, SatelliteAudioMic):
+                    entry["mic"] = entity.extra_state_attributes
+                    break
             if session.listening and session.live_token:
                 entry["live_url"] = f"/api/satellite_audio/live/{session.live_token}"
             if session.recording and session.writer is not None:
@@ -268,7 +279,7 @@ class ControlView(HomeAssistantView):
         entity_id = data.get("entity_id")
         action = data.get("action")
         enabled = bool(data.get("enabled"))
-        if action not in (LISTEN, RECORD):
+        if action not in (LISTEN, RECORD, "mic"):
             return self.json_message("unknown action", status_code=400)
         session = manager.sessions.get(entity_id)
         if session is None:
@@ -276,8 +287,20 @@ class ControlView(HomeAssistantView):
         try:
             if action == LISTEN:
                 await session.set_listen(enabled)
-            else:
+            elif action == RECORD:
                 await session.set_record(enabled)
+            else:
+                from .mic import SatelliteAudioMic
+
+                value = data.get("value")
+                if not isinstance(value, str) or not value.strip():
+                    return self.json_message("value is required", status_code=400)
+                for entity in manager.entities.get(entity_id, []):
+                    if isinstance(entity, SatelliteAudioMic):
+                        await entity.async_set_value(value)
+                        break
+                else:
+                    return self.json_message("mic entity not found", status_code=404)
         except Exception:
             return self.json_message("action failed", status_code=409)
         return self.json({"ok": True})

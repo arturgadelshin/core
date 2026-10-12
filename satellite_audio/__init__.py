@@ -19,7 +19,7 @@ import voluptuous as vol
 
 from aioesphomeapi import VoiceAssistantEventType
 
-from homeassistant.components import switch
+from homeassistant.components import switch, text
 from homeassistant.components.media_player import MediaClass, MediaType
 from homeassistant.components.media_source.models import (
     BrowseMediaSource,
@@ -34,10 +34,12 @@ from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import entity_registry as er
+from homeassistant.helpers.entity import Entity
 from homeassistant.helpers.entity_component import DATA_INSTANCES
 from homeassistant.helpers.entity_platform import EntityPlatform
 from homeassistant.helpers.event import async_track_entity_registry_updated_event
 from homeassistant.helpers.network import get_url
+from homeassistant.setup import async_setup_component
 
 DOMAIN = "satellite_audio"
 
@@ -145,6 +147,7 @@ class SatSession:
     esphome_entry_id: str
     mac: str
     name: str
+    device_id: str | None = None
     listening: bool = False
     recording: bool = False
     live_token: str | None = None
@@ -456,18 +459,32 @@ class SatelliteAudioManager:
     def __init__(self, hass: HomeAssistant) -> None:
         self.hass = hass
         self.sessions: dict[str, SatSession] = {}
-        self.entities: dict[str, list[switch.SwitchEntity]] = {}
+        self.entities: dict[str, list[Entity]] = {}
         self.platform: EntityPlatform | None = None
+        self.text_platform: EntityPlatform | None = None
         self._remove_track: Callable[[], None] | None = None
 
     async def async_setup(self) -> None:
         component = self.hass.data[DATA_INSTANCES].get(switch.DOMAIN)
         if component is None:
             raise HomeAssistantError("switch component is not loaded")
+        await async_setup_component(self.hass, text.DOMAIN, {})
+        text_component = self.hass.data[DATA_INSTANCES].get(text.DOMAIN)
+        if text_component is None:
+            raise HomeAssistantError("text component is not loaded")
         self.platform = EntityPlatform(
             hass=self.hass,
             logger=_LOGGER,
             domain=switch.DOMAIN,
+            platform_name=DOMAIN,
+            platform=None,
+            scan_interval=timedelta(seconds=30),
+            entity_namespace=None,
+        )
+        self.text_platform = EntityPlatform(
+            hass=self.hass,
+            logger=_LOGGER,
+            domain=text.DOMAIN,
             platform_name=DOMAIN,
             platform=None,
             scan_interval=timedelta(seconds=30),
@@ -573,6 +590,7 @@ class SatelliteAudioManager:
         return found
 
     async def _reconcile(self) -> None:
+        from .mic import SatelliteAudioMic
         from .switch import SatelliteAudioSwitch
 
         found = await self._satellite_registry_entries()
@@ -587,8 +605,10 @@ class SatelliteAudioManager:
 
         new_sessions = []
         new_entities = []
+        new_text_entities = []
         for entity_id, entry_id, mac, name, device_id in found:
             if entity_id in self.sessions:
+                self.sessions[entity_id].device_id = device_id
                 continue
             session = SatSession(
                 manager=self,
@@ -596,16 +616,24 @@ class SatelliteAudioManager:
                 esphome_entry_id=entry_id,
                 mac=mac,
                 name=name,
+                device_id=device_id,
             )
             self.sessions[entity_id] = session
             new_sessions.append((session, device_id))
             listen_entity = SatelliteAudioSwitch(session, LISTEN)
             record_entity = SatelliteAudioSwitch(session, RECORD)
-            self.entities[entity_id] = [listen_entity, record_entity]
+            mic_entity = SatelliteAudioMic(session)
+            self.entities[entity_id] = [listen_entity, record_entity, mic_entity]
             new_entities.extend((listen_entity, record_entity))
+            new_text_entities.append(mic_entity)
 
         if new_entities and self.platform is not None:
             await self.platform.async_add_entities(new_entities)
+        if new_text_entities and self.text_platform is not None:
+            await self.text_platform.async_add_entities(new_text_entities)
+        if (new_entities or new_text_entities) and any(
+            device_id for _, device_id in new_sessions
+        ):
             ent_reg = er.async_get(self.hass)
             for session, device_id in new_sessions:
                 if not device_id:
@@ -613,6 +641,29 @@ class SatelliteAudioManager:
                 for entity in self.entities.get(session.entity_id, []):
                     if entity.entity_id:
                         ent_reg.async_update_entity(entity.entity_id, device_id=device_id)
+
+        self._assert_panel_urls()
+
+    @callback
+    def _assert_panel_urls(self) -> None:
+        dev_reg = dr.async_get(self.hass)
+        try:
+            base_url = get_url(self.hass, allow_cloud=False, allow_ip=True)
+        except Exception:
+            return
+        for session in self.sessions.values():
+            if not session.device_id:
+                continue
+            device = dev_reg.async_get(session.device_id)
+            if device is None:
+                continue
+            desired = (
+                f"{base_url}/api/satellite_audio/panel?satellite={session.entity_id}"
+            )
+            if device.configuration_url != desired:
+                dev_reg.async_update_device(
+                    session.device_id, configuration_url=desired
+                )
 
     def notify_change(self, session: SatSession) -> None:
         for entity in self.entities.get(session.entity_id, []):
