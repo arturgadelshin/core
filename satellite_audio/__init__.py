@@ -77,10 +77,6 @@ def _sanitize(name: str) -> str:
     return cleaned or "unknown"
 
 
-def _stall_reconnect_noop() -> None:
-    return None
-
-
 class WavWriter:
     """Stream audio chunks to a wav file from a background thread."""
 
@@ -302,7 +298,6 @@ class SatSession:
         entity._audio_queue = _TeeQueue(self._real_queue, self)
         self._orig_send_event = client.send_voice_assistant_event
         client.send_voice_assistant_event = self._wrap_send_event(self._orig_send_event)
-        entity._async_reconnect_on_stall = _stall_reconnect_noop
         self._installed = True
         self._monitor_task = self.manager.hass.async_create_background_task(
             self._monitor(), f"satellite_audio_monitor_{self.entity_id}"
@@ -335,7 +330,6 @@ class SatSession:
             monitor_task.cancel()
         entity = self._satellite_entity()
         if entity is not None:
-            entity.__dict__.pop("_async_reconnect_on_stall", None)
             if self._real_queue is not None:
                 tee = entity._audio_queue
                 entity._audio_queue = self._real_queue
