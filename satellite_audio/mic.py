@@ -77,6 +77,23 @@ def firmware_settings(hass, entity_id: str) -> str | None:
     return None
 
 
+def firmware_runtime(hass, entity_id: str) -> str | None:
+    from homeassistant.const import Platform
+    from homeassistant.helpers.entity_component import DATA_INSTANCES
+
+    component = hass.data.get(DATA_INSTANCES, {}).get(Platform.ASSIST_SATELLITE)
+    if component is None:
+        return None
+    entity = component.get_entity(entity_id)
+    esphome = getattr(entity, "_esphome_audio_settings", None)
+    if esphome is None:
+        return None
+    return (
+        f"ns={esphome.noise_suppression_level} "
+        f"ag={esphome.auto_gain} vol={esphome.volume_multiplier:g}"
+    )
+
+
 def assist_attributes(hass, entity_id: str) -> dict:
     state = hass.states.get(entity_id)
     if state is None:
@@ -94,6 +111,9 @@ def mic_status(hass, entity_id: str) -> dict:
     firmware = firmware_settings(hass, entity_id)
     if firmware is not None:
         result["firmware"] = firmware
+    runtime = firmware_runtime(hass, entity_id)
+    if runtime is not None:
+        result["firmware_runtime"] = runtime
     return result
 
 
@@ -167,10 +187,16 @@ class SatelliteMicNumber(NumberEntity):
 
     @property
     def extra_state_attributes(self) -> dict:
-        result = {"comment": self._spec["comment"]}
+        result = {
+            "comment": self._spec["comment"],
+            "priority": "прошивка (если не нейтрально) → это поле → глобальный YAML",
+        }
         firmware = firmware_settings(self.hass, self._session.entity_id)
         if firmware is not None:
             result["firmware"] = firmware
+        runtime = firmware_runtime(self.hass, self._session.entity_id)
+        if runtime is not None:
+            result["firmware_runtime"] = runtime
         return result
 
     async def async_added_to_hass(self) -> None:

@@ -195,19 +195,19 @@ class EsphomeAssistSatellite(
 
         return AudioSettings(
             noise_suppression_level=(
-                settings.noise_suppression_level
-                if settings.noise_suppression_level != 0
-                else esphome.noise_suppression_level
+                esphome.noise_suppression_level
+                if esphome.noise_suppression_level != 0
+                else settings.noise_suppression_level
             ),
             auto_gain_dbfs=(
-                settings.auto_gain_dbfs
-                if settings.auto_gain_dbfs != 0
-                else esphome.auto_gain
+                esphome.auto_gain
+                if esphome.auto_gain != 0
+                else settings.auto_gain_dbfs
             ),
             volume_multiplier=(
-                settings.volume_multiplier
-                if settings.volume_multiplier != 1.0
-                else esphome.volume_multiplier
+                esphome.volume_multiplier
+                if esphome.volume_multiplier != 1.0
+                else settings.volume_multiplier
             ),
             is_vad_enabled=settings.is_vad_enabled,
             silence_seconds=settings.silence_seconds,
