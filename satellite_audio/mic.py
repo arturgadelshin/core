@@ -66,13 +66,13 @@ _ALIASES = {spec["full"]: spec["short"] for spec in _SPECS}
 _HW_SPECS = [
     {
         "key": "mic_gain",
-        "min": 0,
-        "max": 30,
+        "min": -50,
+        "max": 50,
         "step": 1,
-        "unit": None,
+        "unit": "dB",
         "icon": "mdi:amplifier",
-        "name": "Усиление кодека 0-30",
-        "comment": "Аппаратный gain кодека CX20921 (регистр 0-30). Меняется на лету: применяется сразу при активном микрофоне. Сохраняется в памяти платы, переживает перезагрузку.",
+        "name": "Усиление кодека -50..50",
+        "comment": "Аппаратный gain кодека CX20921 в дБ: положительные значения усиливают, отрицательные ослабляют (attenuation). Меняется на лету: применяется сразу при активном микрофоне. Сохраняется в памяти платы, переживает перезагрузку.",
     },
     {
         "key": "va_gain",
@@ -97,7 +97,7 @@ _HW_SPECS = [
 ]
 
 _HW_DEFAULTS = {"mic_gain": 0, "va_gain": 1, "mww_gain": 2}
-_HW_LIMITS = {"mic_gain": (0, 30), "va_gain": (1, 64), "mww_gain": (1, 64)}
+_HW_LIMITS = {"mic_gain": (-50, 50), "va_gain": (1, 64), "mww_gain": (1, 64)}
 
 
 def firmware_sensor_entity_id(hass, entity_id: str) -> str | None:
