@@ -159,6 +159,7 @@ class AssistSatelliteEntity(RestoreEntity):
     _auto_gain_dbfs: int = 0
     _volume_multiplier: float = 1.0
     _trigger_timeout_seconds: float = 5.0
+    _has_db_settings: bool = False
     __assist_satellite_state = AssistSatelliteState.IDLE
 
     @final
@@ -208,6 +209,7 @@ class AssistSatelliteEntity(RestoreEntity):
             _LOGGER.warning("Failed to load VAD settings from DB: %s", ex)
             settings = None
 
+        self._has_db_settings = settings is not None
         defaults = get_pipeline_defaults(self.hass)
 
         if settings is not None:
@@ -781,14 +783,28 @@ class AssistSatelliteEntity(RestoreEntity):
         )
 
     async def _save_param(self, param: str, value: Any) -> None:
-        """Save a parameter to SQLite store."""
+        """Save the full current settings snapshot to the SQLite store."""
         try:
             from .vad_settings_db import DATA_VAD_SETTINGS
             store = self.hass.data.get(DATA_VAD_SETTINGS)
             if store is not None:
+                snapshot = {
+                    "speech_threshold": self._speech_threshold,
+                    "vad_timeout_seconds": self._vad_timeout_seconds,
+                    "silence_seconds": self._silence_seconds,
+                    "command_seconds": self._command_seconds,
+                    "before_command_speech_threshold": self._before_command_speech_threshold,
+                    "vad_mode": self._vad_mode,
+                    "before_command_timeout_seconds": self._before_command_timeout_seconds,
+                    "noise_suppression_level": self._noise_suppression_level,
+                    "auto_gain_dbfs": self._auto_gain_dbfs,
+                    "volume_multiplier": self._volume_multiplier,
+                    "trigger_timeout_seconds": self._trigger_timeout_seconds,
+                }
                 await self.hass.async_add_executor_job(
-                    store.set_param, self.entity_id, param, value
+                    store.set_all, self.entity_id, snapshot
                 )
+                self._has_db_settings = True
         except Exception as ex:
             _LOGGER.warning("Failed to save VAD param %s: %s", param, ex)
 

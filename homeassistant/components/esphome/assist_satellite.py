@@ -192,11 +192,11 @@ class EsphomeAssistSatellite(
 
     @callback
     def _resolve_audio_settings(self) -> AudioSettings:
-        """Resolve audio settings with ESPHome firmware values as base."""
+        """Resolve audio settings: per-device overrides win, firmware is the default."""
         settings = super()._resolve_audio_settings()
 
         esphome = self._esphome_audio_settings
-        if esphome is None:
+        if esphome is None or self._has_db_settings:
             return settings
 
         return AudioSettings(

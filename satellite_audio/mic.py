@@ -138,14 +138,20 @@ def firmware_runtime(hass, entity_id: str) -> str | None:
     return f"ns={values['ns']} ag={values['ag']} vol={values['vol']:g}"
 
 
-def firmware_runtime_values(hass, entity_id: str) -> dict | None:
+def _satellite_entity(hass, entity_id: str):
     from homeassistant.const import Platform
     from homeassistant.helpers.entity_component import DATA_INSTANCES
 
     component = hass.data.get(DATA_INSTANCES, {}).get(Platform.ASSIST_SATELLITE)
     if component is None:
         return None
-    entity = component.get_entity(entity_id)
+    return component.get_entity(entity_id)
+
+
+def firmware_runtime_values(hass, entity_id: str) -> dict | None:
+    entity = _satellite_entity(hass, entity_id)
+    if entity is None:
+        return None
     esphome = getattr(entity, "_esphome_audio_settings", None)
     if esphome is None:
         return None
@@ -154,6 +160,11 @@ def firmware_runtime_values(hass, entity_id: str) -> dict | None:
         "ag": int(esphome.auto_gain),
         "vol": float(esphome.volume_multiplier),
     }
+
+
+def has_db_settings(hass, entity_id: str) -> bool:
+    entity = _satellite_entity(hass, entity_id)
+    return bool(entity is not None and getattr(entity, "_has_db_settings", False))
 
 
 _NEUTRAL = {"ns": 0, "ag": 0, "vol": 1.0}
@@ -179,16 +190,28 @@ def effective_settings(hass, entity_id: str) -> dict:
         "ag": _int("auto_gain_dbfs", 0),
         "vol": _float("volume_multiplier", 1.0),
     }
+    pinned = has_db_settings(hass, entity_id)
     firmware = firmware_runtime_values(hass, entity_id)
     result = {}
     for key in ("ns", "ag", "vol"):
         firmware_value = firmware.get(key) if firmware else None
-        overridden = firmware_value is not None and firmware_value != _NEUTRAL[key]
+        firmware_default = (
+            firmware_value is not None and firmware_value != _NEUTRAL[key]
+        )
+        if pinned:
+            source = "закреплено за платой (правка через UI)"
+            effective = host[key]
+        elif firmware_default:
+            source = "прошивка (дефолт)"
+            effective = firmware_value
+        else:
+            source = "глобальный YAML"
+            effective = host[key]
         result[key] = {
-            "effective": firmware_value if overridden else host[key],
+            "effective": effective,
             "host": host[key],
             "firmware": firmware_value,
-            "firmware_override": overridden,
+            "source": source,
         }
     return result
 
@@ -215,9 +238,7 @@ def mic_status(hass, entity_id: str) -> dict:
         result["firmware_runtime"] = runtime
     effective = effective_settings(hass, entity_id)
     result["effective"] = {k: v["effective"] for k, v in effective.items()}
-    result["firmware_overrides"] = [
-        k for k, v in effective.items() if v["firmware_override"]
-    ]
+    result["sources"] = {k: v["source"] for k, v in effective.items()}
     return result
 
 
@@ -297,18 +318,15 @@ class SatelliteMicNumber(NumberEntity):
         entry = effective[short]
         result = {
             "comment": self._spec["comment"],
-            "priority": "прошивка (если не нейтрально) → это поле → глобальный YAML",
+            "priority": "это поле (закрепляется при правке) → прошивка (дефолт) → глобальный YAML",
+            "source": entry["source"],
         }
-        if entry["firmware_override"]:
-            result["firmware_override"] = True
-            result["host_value"] = entry["host"]
+        if entry["source"] == "прошивка (дефолт)":
             result["note"] = (
-                f"Действует значение прошивки ({entry['effective']:g}). "
-                "Правка поля сохранится на хосте, но применится, только когда "
-                "прошивка станет нейтральной."
+                "Дефолт из прошивки. Измени поле — значение закрепится за платой "
+                "и начнёт действовать со следующего разговора; «Сброс микрофона» "
+                "вернёт к дефолту прошивки."
             )
-        else:
-            result["firmware_override"] = False
         firmware = firmware_settings(self.hass, self._session.entity_id)
         if firmware is not None:
             result["firmware"] = firmware
@@ -492,7 +510,7 @@ class SatelliteMicReset(ButtonEntity):
     @property
     def extra_state_attributes(self) -> dict:
         return {
-            "comment": "Удаляет персональные настройки платы (SQLite) и возвращает все коэффициенты к глобальным дефолтам conf_assist_pipeline.yaml на лету."
+            "comment": "Удаляет персональные настройки платы (SQLite): коэффициенты возвращаются к дефолтам прошивки (если заданы) либо глобального YAML. Применяется на лету."
         }
 
     async def async_press(self) -> None:
@@ -518,6 +536,7 @@ class SatelliteMicReset(ButtonEntity):
         entity = component.get_entity(entity_id) if component is not None else None
         if entity is None:
             return
+        entity._has_db_settings = False
         for attr, key in _RESET_ATTRS.items():
             setattr(entity, attr, defaults[key])
         entity.async_write_ha_state()
