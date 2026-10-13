@@ -156,6 +156,70 @@ const SCOPE = new URLSearchParams(location.search).get('satellite');
 const players = {};
 const asrMode = {};
 let audioCtx = null;
+let TOKENS = null;
+try { TOKENS = JSON.parse(localStorage.getItem('hassTokens') || 'null'); } catch (e) {}
+let HA_TOKEN = TOKENS ? TOKENS.access_token : null;
+const signedPaths = {};
+
+async function refreshToken() {
+  if (!TOKENS || !TOKENS.refresh_token) return false;
+  const body = new URLSearchParams({
+    grant_type: 'refresh_token',
+    refresh_token: TOKENS.refresh_token,
+    client_id: TOKENS.client_id || (location.origin + '/')
+  });
+  try {
+    const resp = await fetch('/auth/token', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+      body: body.toString()
+    });
+    if (!resp.ok) return false;
+    const data = await resp.json();
+    HA_TOKEN = data.access_token;
+    TOKENS.access_token = data.access_token;
+    TOKENS.refresh_token = data.refresh_token;
+    TOKENS.expires = Math.floor(Date.now() / 1000) + (data.expires_in || 1800);
+    try { localStorage.setItem('hassTokens', JSON.stringify(TOKENS)); } catch (e) {}
+    return true;
+  } catch (e) { return false; }
+}
+
+async function authFetch(url, opts) {
+  if (!HA_TOKEN) return {status: 499};
+  opts = opts || {};
+  opts.headers = Object.assign({}, opts.headers || {}, {'Authorization': 'Bearer ' + HA_TOKEN});
+  let resp = await fetch(url, opts);
+  if (resp.status === 401 && (await refreshToken())) {
+    opts.headers = Object.assign({}, opts.headers || {}, {'Authorization': 'Bearer ' + HA_TOKEN});
+    resp = await fetch(url, opts);
+  }
+  return resp;
+}
+
+function showAuthError(resp) {
+  const list = document.getElementById('list');
+  if (resp.status === 499) {
+    list.textContent = 'Ты не залогинен в Home Assistant на этом адресе. Открой главную страницу ' + location.origin + ', войди и вернись к панели.';
+  } else if (resp.status === 403) {
+    list.textContent = 'Нужны права администратора.';
+  } else {
+    list.textContent = 'Сессия истекла — открой главную страницу ' + location.origin + ', войди заново и вернись к панели.';
+  }
+}
+
+async function signPath(path) {
+  if (signedPaths[path]) return signedPaths[path];
+  const resp = await authFetch('/api/satellite_audio/ticket', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({path: path})
+  });
+  if (!resp.ok) return null;
+  const data = await resp.json();
+  signedPaths[path] = data.path;
+  return data.path;
+}
 
 function ensureCtx() {
   if (!audioCtx) {
@@ -176,14 +240,21 @@ function tryResume() {
   document.addEventListener(ev, tryResume, {passive: true});
 });
 
-function connectStream(sat, card) {
+async function connectStream(sat, card) {
   const key = sat.entity_id;
   const processed = !!asrMode[key];
   const wsPath = sat.live_url.replace('/live/', '/ws/') + (processed ? '?processed=1' : '');
   if (players[key] && players[key].url === wsPath && players[key].open) return;
   disconnectStream(key);
+  const signed = await signPath(wsPath);
+  if (!signed) {
+    const st0 = card.querySelector('.state');
+    st0.textContent = 'нет доступа — войди в Home Assistant';
+    st0.className = 'state err';
+    return;
+  }
   const ctx = ensureCtx();
-  const wsUrl = (location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host + wsPath;
+  const wsUrl = (location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host + signed;
   const ws = new WebSocket(wsUrl);
   ws.binaryType = 'arraybuffer';
   const st = {url: wsPath, ws: ws, open: true, nextTime: 0, blocked: null, meter: card.querySelector('.meter div'), state: card.querySelector('.state')};
@@ -248,10 +319,27 @@ function disconnectStream(key) {
 }
 
 async function refresh() {
-  const resp = await fetch('/api/satellite_audio/status');
+  const resp = await authFetch('/api/satellite_audio/status');
+  if (!resp.ok) { showAuthError(resp); stopPolling(); return; }
   const state = await resp.json();
   render(state);
 }
+
+let refreshTimer = null;
+function startPolling() {
+  if (refreshTimer) clearInterval(refreshTimer);
+  refreshTimer = setInterval(refresh, 2000);
+  refresh();
+}
+function stopPolling() {
+  if (refreshTimer) { clearInterval(refreshTimer); refreshTimer = null; }
+}
+window.addEventListener('storage', function (ev) {
+  if (ev.key !== 'hassTokens') return;
+  try { TOKENS = JSON.parse(ev.newValue || 'null'); } catch (e) { TOKENS = null; }
+  HA_TOKEN = TOKENS ? TOKENS.access_token : null;
+  if (HA_TOKEN) startPolling();
+});
 
 function fmt(s) { return s ? ('' + Math.floor(s / 60) + ':' + String(Math.floor(s % 60)).padStart(2, '0')) : ''; }
 
@@ -318,16 +406,16 @@ function render(state) {
 
 async function control(entity_id, action, enabled) {
   if (action === 'listen' && enabled) ensureCtx();
-  await fetch('/api/satellite_audio/control', {
+  const resp = await authFetch('/api/satellite_audio/control', {
     method: 'POST',
     headers: {'Content-Type': 'application/json'},
     body: JSON.stringify({entity_id: entity_id, action: action, enabled: enabled})
   });
+  if (!resp.ok) showAuthError(resp);
   refresh();
 }
 
-refresh();
-setInterval(refresh, 2000);
+startPolling();
 </script>
 </body>
 </html>"""
@@ -337,12 +425,19 @@ def _manager(request: web.Request) -> SatelliteAudioManager:
     return request.app["hass"].data[DOMAIN]
 
 
+def _admin_denied(request: web.Request) -> bool:
+    user = request.get("hass_user")
+    return user is None or not user.is_admin
+
+
 class StatusView(HomeAssistantView):
     url = "/api/satellite_audio/status"
     name = "api:satellite_audio:status"
-    requires_auth = False
+    requires_auth = True
 
     async def get(self, request: web.Request) -> web.Response:
+        if _admin_denied(request):
+            return self.json_message("admin required", status_code=403)
         manager = _manager(request)
         from .mic import mic_status, parse_hw_gains
 
@@ -378,9 +473,11 @@ class StatusView(HomeAssistantView):
 class ControlView(HomeAssistantView):
     url = "/api/satellite_audio/control"
     name = "api:satellite_audio:control"
-    requires_auth = False
+    requires_auth = True
 
     async def post(self, request: web.Request) -> web.Response:
+        if _admin_denied(request):
+            return self.json_message("admin required", status_code=403)
         manager = _manager(request)
         data = await request.json()
         entity_id = data.get("entity_id")
@@ -433,7 +530,7 @@ class ControlView(HomeAssistantView):
 class LiveView(HomeAssistantView):
     url = "/api/satellite_audio/live/{token}"
     name = "api:satellite_audio:live"
-    requires_auth = False
+    requires_auth = True
 
     async def get(self, request: web.Request, token: str) -> web.StreamResponse:
         manager = _manager(request)
@@ -470,9 +567,11 @@ class LiveView(HomeAssistantView):
 class LiveSocketView(HomeAssistantView):
     url = "/api/satellite_audio/ws/{token}"
     name = "api:satellite_audio:ws"
-    requires_auth = False
+    requires_auth = True
 
     async def get(self, request: web.Request, token: str) -> web.WebSocketResponse:
+        if _admin_denied(request):
+            raise web.HTTPForbidden(reason="admin required")
         manager = _manager(request)
         session = None
         for candidate in manager.sessions.values():
@@ -540,10 +639,32 @@ class PanelView(HomeAssistantView):
         return web.Response(text=PANEL_HTML, content_type="text/html")
 
 
+class TicketView(HomeAssistantView):
+    url = "/api/satellite_audio/ticket"
+    name = "api:satellite_audio:ticket"
+    requires_auth = True
+
+    async def post(self, request: web.Request) -> web.Response:
+        if _admin_denied(request):
+            return self.json_message("admin required", status_code=403)
+        data = await request.json()
+        path = data.get("path")
+        if not isinstance(path, str) or not path.startswith("/api/satellite_audio/"):
+            return self.json_message("invalid path", status_code=400)
+        from datetime import timedelta
+
+        from homeassistant.components.http.auth import async_sign_path
+
+        signed = async_sign_path(
+            request.app["hass"], path, timedelta(seconds=3600)
+        )
+        return self.json({"path": signed})
+
+
 class SilentWavView(HomeAssistantView):
     url = "/api/satellite_audio/silent.wav"
     name = "api:satellite_audio:silent"
-    requires_auth = False
+    requires_auth = True
 
     async def get(self, request: web.Request) -> web.Response:
         return web.Response(
@@ -556,7 +677,7 @@ class SilentWavView(HomeAssistantView):
 class FileView(HomeAssistantView):
     url = "/api/satellite_audio/file/{key}/{filename}"
     name = "api:satellite_audio:file"
-    requires_auth = False
+    requires_auth = True
 
     async def get(self, request: web.Request, key: str, filename: str) -> web.Response:
         hass = request.app["hass"]

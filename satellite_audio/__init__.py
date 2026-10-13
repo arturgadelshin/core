@@ -406,7 +406,16 @@ class SatSession:
         if client is None:
             return
         hass = self.manager.hass
-        media_url = f"{get_url(hass, allow_cloud=False, allow_ip=True)}/api/satellite_audio/silent.wav"
+        from datetime import timedelta
+
+        from homeassistant.components.http.auth import async_sign_path
+
+        silent_path = async_sign_path(
+            hass, "/api/satellite_audio/silent.wav", timedelta(seconds=300)
+        )
+        media_url = (
+            f"{get_url(hass, allow_cloud=False, allow_ip=True)}{silent_path}"
+        )
         mp_entity_id = self._media_player_entity_id()
         original_volume = None
         if mp_entity_id is not None:
@@ -542,11 +551,13 @@ class SatelliteAudioManager:
             PanelView,
             SilentWavView,
             StatusView,
+            TicketView,
         )
 
         for view in (
             StatusView(),
             ControlView(),
+            TicketView(),
             LiveView(),
             LiveSocketView(),
             PanelView(),
@@ -842,11 +853,20 @@ class SatelliteAudioMediaSource(MediaSource):
         if session is None:
             raise ValueError(f"Unknown satellite {key}")
         base_url = get_url(self.hass, allow_cloud=False, allow_ip=True)
+        from datetime import timedelta
+
+        from homeassistant.components.http.auth import async_sign_path
+
         if leaf == "live":
             if not session.listening or not session.live_token:
                 raise ValueError("Live stream is not active")
+            live_path = async_sign_path(
+                self.hass,
+                f"/api/satellite_audio/live/{session.live_token}",
+                timedelta(seconds=3600),
+            )
             return PlayMedia(
-                url=f"{base_url}/api/satellite_audio/live/{session.live_token}",
+                url=f"{base_url}{live_path}",
                 mime_type="audio/wav",
             )
         filename = Path(leaf).name
@@ -857,8 +877,13 @@ class SatelliteAudioMediaSource(MediaSource):
         )
         if not path.is_file():
             raise ValueError("Recording not found")
+        file_path = async_sign_path(
+            self.hass,
+            f"/api/satellite_audio/file/{key}/{filename}",
+            timedelta(seconds=3600),
+        )
         return PlayMedia(
-            url=f"{base_url}/api/satellite_audio/file/{key}/{filename}",
+            url=f"{base_url}{file_path}",
             mime_type="audio/wav",
         )
 
