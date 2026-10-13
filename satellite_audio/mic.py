@@ -132,6 +132,13 @@ def firmware_settings(hass, entity_id: str) -> str | None:
 
 
 def firmware_runtime(hass, entity_id: str) -> str | None:
+    values = firmware_runtime_values(hass, entity_id)
+    if values is None:
+        return None
+    return f"ns={values['ns']} ag={values['ag']} vol={values['vol']:g}"
+
+
+def firmware_runtime_values(hass, entity_id: str) -> dict | None:
     from homeassistant.const import Platform
     from homeassistant.helpers.entity_component import DATA_INSTANCES
 
@@ -142,10 +149,48 @@ def firmware_runtime(hass, entity_id: str) -> str | None:
     esphome = getattr(entity, "_esphome_audio_settings", None)
     if esphome is None:
         return None
-    return (
-        f"ns={esphome.noise_suppression_level} "
-        f"ag={esphome.auto_gain} vol={esphome.volume_multiplier:g}"
-    )
+    return {
+        "ns": int(esphome.noise_suppression_level),
+        "ag": int(esphome.auto_gain),
+        "vol": float(esphome.volume_multiplier),
+    }
+
+
+_NEUTRAL = {"ns": 0, "ag": 0, "vol": 1.0}
+
+
+def effective_settings(hass, entity_id: str) -> dict:
+    attributes = assist_attributes(hass, entity_id)
+
+    def _int(key, default):
+        try:
+            return int(attributes.get(key, default) or default)
+        except (TypeError, ValueError):
+            return default
+
+    def _float(key, default):
+        try:
+            return float(attributes.get(key, default) or default)
+        except (TypeError, ValueError):
+            return default
+
+    host = {
+        "ns": _int("noise_suppression_level", 0),
+        "ag": _int("auto_gain_dbfs", 0),
+        "vol": _float("volume_multiplier", 1.0),
+    }
+    firmware = firmware_runtime_values(hass, entity_id)
+    result = {}
+    for key in ("ns", "ag", "vol"):
+        firmware_value = firmware.get(key) if firmware else None
+        overridden = firmware_value is not None and firmware_value != _NEUTRAL[key]
+        result[key] = {
+            "effective": firmware_value if overridden else host[key],
+            "host": host[key],
+            "firmware": firmware_value,
+            "firmware_override": overridden,
+        }
+    return result
 
 
 def assist_attributes(hass, entity_id: str) -> dict:
@@ -168,6 +213,11 @@ def mic_status(hass, entity_id: str) -> dict:
     runtime = firmware_runtime(hass, entity_id)
     if runtime is not None:
         result["firmware_runtime"] = runtime
+    effective = effective_settings(hass, entity_id)
+    result["effective"] = {k: v["effective"] for k, v in effective.items()}
+    result["firmware_overrides"] = [
+        k for k, v in effective.items() if v["firmware_override"]
+    ]
     return result
 
 
@@ -237,14 +287,28 @@ class SatelliteMicNumber(NumberEntity):
 
     @property
     def native_value(self) -> float | None:
-        return self._assist_attributes().get(self._spec["full"])
+        effective = effective_settings(self.hass, self._session.entity_id)
+        return effective[self._spec["short"]]["effective"]
 
     @property
     def extra_state_attributes(self) -> dict:
+        short = self._spec["short"]
+        effective = effective_settings(self.hass, self._session.entity_id)
+        entry = effective[short]
         result = {
             "comment": self._spec["comment"],
             "priority": "прошивка (если не нейтрально) → это поле → глобальный YAML",
         }
+        if entry["firmware_override"]:
+            result["firmware_override"] = True
+            result["host_value"] = entry["host"]
+            result["note"] = (
+                f"Действует значение прошивки ({entry['effective']:g}). "
+                "Правка поля сохранится на хосте, но применится, только когда "
+                "прошивка станет нейтральной."
+            )
+        else:
+            result["firmware_override"] = False
         firmware = firmware_settings(self.hass, self._session.entity_id)
         if firmware is not None:
             result["firmware"] = firmware

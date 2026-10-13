@@ -41,21 +41,12 @@ class _ProcessedStream:
         self._settings = (ns, ag, vol)
 
     def _refresh(self) -> None:
-        from .mic import assist_attributes
+        from .mic import effective_settings
 
-        attrs = assist_attributes(self._hass, self._entity_id)
-        try:
-            ns = int(attrs.get("noise_suppression_level", 0) or 0)
-        except (TypeError, ValueError):
-            ns = 0
-        try:
-            ag = int(attrs.get("auto_gain_dbfs", 0) or 0)
-        except (TypeError, ValueError):
-            ag = 0
-        try:
-            vol = float(attrs.get("volume_multiplier", 1.0) or 1.0)
-        except (TypeError, ValueError):
-            vol = 1.0
+        effective = effective_settings(self._hass, self._entity_id)
+        ns = effective["ns"]["effective"]
+        ag = effective["ag"]["effective"]
+        vol = effective["vol"]["effective"]
         if (ns, ag, vol) != self._settings:
             self._apply(ns, ag, vol)
 
